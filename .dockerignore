@@ -1,0 +1,12 @@
+venv/
+.venv/
+__pycache__/
+.env*
+*.sql
+*.csv
+*.xlsx
+*.db
+tests/
+privado/
+.git/
+CLAUDE.md

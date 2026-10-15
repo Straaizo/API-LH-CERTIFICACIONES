@@ -1,0 +1,69 @@
+# =============================================
+# DATOS SENSIBLES - NUNCA SUBIR AL REPOSITORIO
+# =============================================
+.env*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+secrets/
+credentials/
+credenciales*.json
+service-account*.json
+gcp-credentials*.json
+*-sa.json
+
+# =============================================
+# DATOS REALES: respaldos, exportaciones y planillas
+# =============================================
+*.sql
+*.csv
+*.xlsx
+*.xls
+*.xlsm
+*.db
+# Excepción: migraciones de esquema (sin datos)
+!migrations/
+!migrations/*.sql
+# Base demo, archivos locales y pruebas con datos reales
+privado/
+**/privado/
+
+# =============================================
+# PYTHON
+# =============================================
+__pycache__/
+*.py[cod]
+build/
+dist/
+*.egg-info/
+venv/
+.venv/
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+
+# =============================================
+# IDEs Y SISTEMA OPERATIVO
+# =============================================
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# =============================================
+# LOGS Y TEMPORALES
+# =============================================
+*.log
+logs/
+*.tmp
+*.bak
+
+# =============================================
+# CLAUDE
+# =============================================
+
+CLAUDE*.md   

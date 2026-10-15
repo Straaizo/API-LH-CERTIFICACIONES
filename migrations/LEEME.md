@@ -1,3 +1,3 @@
-# Migraciones de esquema
+# Migraciones
 
-Solo esquema, sin datos. Se aplican a mano vía Cloud SQL Auth Proxy, después de mostrar el SQL y confirmar.
+Esquema de la base de datos de Certificaciones: solo estructura, sin datos.

@@ -103,7 +103,7 @@ async def unhandled_exception_handler(request: Request, exc: Exception):
 
 
 # ── Routers ───────────────────────────────────────────────────────────────────
-# Para registrar un nuevo módulo, añadir una línea a esta lista (ver routers/README.md)
+# Para registrar un nuevo módulo, añadir una línea a esta lista
 
 ROUTERS = [
     (catalogos,        "📍 Catálogos"),

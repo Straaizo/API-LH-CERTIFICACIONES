@@ -67,3 +67,5 @@ logs/
 # =============================================
 
 CLAUDE*.md   
+# Instrucciones de trabajo locales (no se publican)
+CLAUDE.md

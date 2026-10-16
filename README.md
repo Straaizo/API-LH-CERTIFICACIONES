@@ -157,7 +157,7 @@ La API se construyó sobre la estructura de **API-BASE-LH**, el repositorio base
 
 Esta API la consume la aplicación web en **React**, desplegada en **Firebase Hosting**.
 
-➡️ Repositorio de la aplicación: [certificaciones_react](https://github.com/Straaizo/certificaciones_react)
+➡️ Repositorio de la aplicación: [LH-CERTIFICACIONES](https://github.com/Straaizo/LH-CERTIFICACIONES)
 
 ---
 

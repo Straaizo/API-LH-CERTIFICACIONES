@@ -1,4 +1,4 @@
-"""Carpeta para el auditor: un ZIP por protocolo, empresa, unidad y temporada."""
+"""Carpeta para el auditor: un ZIP por protocolo, empresa, sucursal y temporada."""
 import io
 import zipfile
 from datetime import date
@@ -6,18 +6,18 @@ from datetime import date
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from openpyxl import Workbook
-from sqlalchemy import or_, select
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from routers.auditorias import detalle as detalle_auditoria
 from routers.documentos import version_vigente
 from utils import almacenamiento
 from utils.auth import usuario_actual, verificar_unidad
-from utils.comunes import obtener
+from utils.comunes import en_temporada, obtener, obtener_temporada
 from utils.db import get_db
 from utils.modelos import (
-    Auditoria, Documento, Empresa, NoConformidad, Protocolo, Temporada, Unidad, Usuario, VersionNorma,
-    documento_protocolos,
+    Auditoria, Certificacion, Documento, DocumentoVersion, Empresa, NoConformidad, Protocolo, Unidad, Usuario,
+    VersionNorma,
 )
 from utils.texto import nombre_archivo_seguro
 
@@ -42,7 +42,7 @@ def carpeta_auditor(protocolo_id: int, empresa_id: int, temporada_id: int, unida
                     usuario: Usuario = Depends(usuario_actual), db: Session = Depends(get_db)) -> StreamingResponse:
     protocolo = obtener(db, Protocolo, protocolo_id)
     empresa = obtener(db, Empresa, empresa_id)
-    temporada = obtener(db, Temporada, temporada_id)
+    temporada = obtener_temporada(db, temporada_id)
     unidad = obtener(db, Unidad, unidad_id) if unidad_id else None
     if unidad:
         verificar_unidad(usuario, unidad.id)
@@ -51,11 +51,10 @@ def carpeta_auditor(protocolo_id: int, empresa_id: int, temporada_id: int, unida
 
     consulta = select(Documento).where(
         Documento.empresa_id == empresa.id,
-        # Documentos del protocolo, o sin protocolo asignado (el formulario ya no los pide)
-        or_(Documento.id.in_(select(documento_protocolos.c.documento_id)
-                             .where(documento_protocolos.c.protocolo_id == protocolo.id)),
-            Documento.id.not_in(select(documento_protocolos.c.documento_id))),
-        or_(Documento.temporada_id == temporada.id, Documento.temporada_id.is_(None)),
+        # Todos los documentos fijos de la empresa, salvo los certificados de otras normas
+        Documento.id.not_in(select(DocumentoVersion.documento_id).join(
+            Certificacion, Certificacion.documento_version_id == DocumentoVersion.id).where(
+            Certificacion.protocolo_id != protocolo.id)),
     )
     if unidad:
         consulta = consulta.where(Documento.seccion.in_((unidad.tipo, "empresarial")))
@@ -83,39 +82,39 @@ def carpeta_auditor(protocolo_id: int, empresa_id: int, temporada_id: int, unida
                 faltantes.append(ruta)
                 continue
             usados.add(ruta)
-            indice.append([doc.categoria.nombre, doc.codigo, doc.titulo, doc.unidad.nombre if doc.unidad else "Empresa",
+            indice.append([doc.categoria.nombre, doc.codigo, doc.titulo, doc.seccion.capitalize(),
                            vigente.numero, vigente.fecha_emision, vigente.fecha_vencimiento, ruta])
         zf.writestr("Indice.xlsx", _excel(
-            ["Categoría", "Código", "Título", "Unidad", "Versión", "Emisión", "Vencimiento", "Archivo"], indice))
+            ["Categoría", "Código", "Título", "Sección", "Versión", "Emisión", "Vencimiento", "Archivo"], indice))
 
         auditorias = db.scalars(
-            select(Auditoria).join(Unidad).where(
-                Auditoria.temporada_id == temporada.id, Auditoria.estado != "planificada",
+            select(Auditoria).where(
+                en_temporada(temporada, Auditoria.fecha, Auditoria.unidad_id), Auditoria.estado != "planificada",
                 Auditoria.version_id.in_(select(VersionNorma.id).where(VersionNorma.protocolo_id == protocolo.id)),
                 Auditoria.unidad_id == unidad.id if unidad else Auditoria.unidad_id.in_(
-                    [u.id for u in db.scalars(select(Unidad)) if u.empresa_id == empresa.id]),
+                    select(Unidad.id).where(Unidad.empresa_id == empresa.id)),
             ).order_by(Auditoria.fecha)).all()
         for a in auditorias:
             datos = detalle_auditoria(a.id, usuario, db)
             filas = [[i["requisito"]["seccion"], i["requisito"]["codigo"], i["requisito"]["nivel"],
                       i["requisito"]["texto"], RESULTADOS[i["resultado"]], i["comentario"]] for i in datos["items"]]
-            nombre = nombre_archivo_seguro(f"Checklist {a.fecha.isoformat()} {a.unidad.nombre} {'-'.join(a.secciones or [])}")
+            nombre = nombre_archivo_seguro(f"Checklist {a.fecha.isoformat()} {a.unidad.etiqueta} {'-'.join(a.secciones or [])}")
             zf.writestr(f"Auditorias internas/{nombre}.xlsx", _excel(
                 ["Sección", "Requisito", "Nivel", "Texto", "Resultado", "Comentario"], filas))
 
         ncs = db.scalars(select(NoConformidad).where(NoConformidad.auditoria_id.in_([a.id for a in auditorias]))
                          .order_by(NoConformidad.fecha_deteccion)).all()
         zf.writestr("No conformidades.xlsx", _excel(
-            ["Detectada", "Unidad", "Requisito", "Descripción", "Tipo", "Clasificación", "Responsable", "Plazo",
+            ["Detectada", "Sucursal", "Requisito", "Descripción", "Tipo", "Clasificación", "Responsable", "Plazo",
              "Estado", "Reincidente", "Levantamientos"],
-            [[nc.fecha_deteccion, nc.unidad.nombre, nc.requisito.codigo, nc.descripcion, nc.tipo, nc.clasificacion,
+            [[nc.fecha_deteccion, nc.unidad.etiqueta, nc.requisito.codigo, nc.descripcion, nc.tipo, nc.clasificacion,
               nc.responsable.nombre if nc.responsable else None, nc.plazo, nc.estado,
               "Sí" if nc.reincidente_de_id else "No", " | ".join(x.descripcion for x in nc.acciones)] for nc in ncs]))
         if faltantes:
             zf.writestr("LEEME_archivos_faltantes.txt", "\n".join(faltantes))
 
     nombre_zip = nombre_archivo_seguro(
-        f"Carpeta {protocolo.codigo} {empresa.codigo} {unidad.nombre if unidad else 'todas'} {temporada.nombre} "
+        f"Carpeta {protocolo.codigo} {empresa.codigo} {unidad.etiqueta if unidad else 'todas'} {temporada.nombre} "
         f"{date.today().isoformat()}")
     buffer.seek(0)
     return StreamingResponse(buffer, media_type="application/zip",

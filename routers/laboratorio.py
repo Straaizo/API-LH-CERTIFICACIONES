@@ -6,13 +6,14 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
 from utils import almacenamiento
-from utils.auth import puede_escribir, usuario_actual, verificar_unidad
+from utils.auth import LABORATORIO, requiere_permiso, usuario_actual, verificar_unidad
 from utils.bitacora import registrar
-from utils.comunes import filtrar_unidades, obtener, temporada_para_fecha, unidad_dict
+from utils.comunes import filtrar_temporada, filtrar_unidades, obtener, unidad_dict
 from utils.db import get_db
 from utils.leer_informe_lab import leer_informe
 from utils.modelos import (
-    Analisis, Especie, FuenteAgua, LimiteParametro, ResultadoAnalisis, TipoAnalisis, Unidad, Usuario,
+    TIPO_CAMPO, TIPO_PACKING, Analisis, Especie, FuenteAgua, LimiteParametro, ResultadoAnalisis, TipoAnalisis, Unidad,
+    Usuario,
 )
 
 router = APIRouter(prefix="/laboratorio")
@@ -82,30 +83,29 @@ def listar(empresa_id: int | None = None, unidad_id: int | None = None, temporad
     consulta = filtrar_unidades(
         select(Analisis).options(selectinload(Analisis.resultados), selectinload(Analisis.tipo)),
         Analisis.unidad_id, usuario, empresa_id, unidad_id)
-    if temporada_id:
-        consulta = consulta.where(Analisis.temporada_id == temporada_id)
+    consulta = filtrar_temporada(db, consulta, temporada_id, Analisis.fecha_muestreo, Analisis.unidad_id)
     if tipo_analisis_id:
         consulta = consulta.where(Analisis.tipo_analisis_id == tipo_analisis_id)
     if tipo_unidad in ("campo", "planta"):
-        consulta = consulta.where(Analisis.unidad_id.in_(select(Unidad.id).where(Unidad.tipo == tipo_unidad)))
+        tipo_id = TIPO_CAMPO if tipo_unidad == "campo" else TIPO_PACKING
+        consulta = consulta.where(Analisis.unidad_id.in_(select(Unidad.id).where(Unidad.tipo_id == tipo_id)))
     datos = [_analisis_dict(a) for a in db.scalars(consulta.order_by(Analisis.fecha_muestreo.desc()))]
     return [d for d in datos if d["fuera_de_norma"]] if solo_fuera_de_norma else datos
 
 
 @router.post("/analisis", status_code=201)
-def crear(datos: AnalisisEntrada, usuario: Usuario = Depends(puede_escribir), db: Session = Depends(get_db)) -> dict:
+def crear(datos: AnalisisEntrada, usuario: Usuario = Depends(requiere_permiso(LABORATORIO)),
+          db: Session = Depends(get_db)) -> dict:
     verificar_unidad(usuario, datos.unidad_id)
     tipo = obtener(db, TipoAnalisis, datos.tipo_analisis_id)
     if datos.fuente_agua_id:
         fuente = obtener(db, FuenteAgua, datos.fuente_agua_id)
-        if datos.unidad_id not in {u.id for u in fuente.unidades}:
-            raise HTTPException(400, "La fuente de agua no abastece a esa sucursal")
+        if fuente.unidad_id != datos.unidad_id:
+            raise HTTPException(400, "La fuente de agua no es de esa sucursal")
     elif tipo.usa_fuente_agua:
         raise HTTPException(400, "Este análisis requiere indicar la fuente de agua")
     if datos.especie_id:
-        especie = obtener(db, Especie, datos.especie_id)
-        if datos.unidad_id not in {u.id for u in especie.unidades}:
-            raise HTTPException(400, f"El campo no tiene {especie.nombre}")
+        obtener(db, Especie, datos.especie_id)
     elif tipo.usa_especie:
         raise HTTPException(400, "Este análisis requiere indicar la especie")
     if datos.archivo_key and not almacenamiento.existe(datos.archivo_key):
@@ -113,11 +113,7 @@ def crear(datos: AnalisisEntrada, usuario: Usuario = Depends(puede_escribir), db
 
     limites = {lp.parametro.lower(): lp for lp in
                db.scalars(select(LimiteParametro).where(LimiteParametro.tipo_analisis_id == tipo.id))}
-    temporada = temporada_para_fecha(db, datos.fecha_muestreo)
-    analisis = Analisis(
-        **datos.model_dump(exclude={"resultados"}), temporada_id=temporada.id if temporada else None,
-        creado_por_id=usuario.id,
-    )
+    analisis = Analisis(**datos.model_dump(exclude={"resultados"}), creado_por_id=usuario.id)
     for r in datos.resultados:
         ref = limites.get(r.parametro.lower())
         # El límite se copia al resultado: un cambio de norma no altera el histórico
@@ -139,7 +135,7 @@ def crear(datos: AnalisisEntrada, usuario: Usuario = Depends(puede_escribir), db
 
 
 @router.post("/leer-informe")
-def leer_informe_subido(datos: LecturaEntrada, usuario: Usuario = Depends(puede_escribir),
+def leer_informe_subido(datos: LecturaEntrada, usuario: Usuario = Depends(requiere_permiso(LABORATORIO)),
                         db: Session = Depends(get_db)) -> dict:
     """Lee el informe ya subido (URL firmada) y propone los valores; no guarda nada."""
     if datos.unidad_id:
@@ -148,8 +144,7 @@ def leer_informe_subido(datos: LecturaEntrada, usuario: Usuario = Depends(puede_
         raise HTTPException(400, "El informe no se subió correctamente")
     tipos = list(db.scalars(select(TipoAnalisis).where(TipoAnalisis.ambito == "campo")))
     tipo = db.get(TipoAnalisis, datos.tipo_analisis_id) if datos.tipo_analisis_id else None
-    unidad = db.get(Unidad, datos.unidad_id) if datos.unidad_id else None
-    especies = list(db.scalars(select(Especie).where(Especie.unidades.any(Unidad.id == unidad.id)))) if unidad else []
+    especies = list(db.scalars(select(Especie).order_by(Especie.nombre)))
 
     def parametros(t: TipoAnalisis) -> list[str]:
         return [lp.parametro for lp in db.scalars(select(LimiteParametro).where(LimiteParametro.tipo_analisis_id == t.id))]

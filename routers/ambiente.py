@@ -3,44 +3,37 @@ from datetime import date
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy import select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
-from utils.auth import puede_escribir, solo_certificaciones, usuario_actual, verificar_unidad
+from utils.auth import AMBIENTE, requiere_permiso, solo_certificaciones, usuario_actual, verificar_unidad
 from utils.bitacora import registrar
-from utils.comunes import filtrar_unidades, obtener, temporada_actual, temporada_para_fecha, unidad_dict
+from utils.comunes import filtrar_temporada, filtrar_unidades, obtener, unidad_dict
 from utils.db import get_db
-from utils.modelos import FactorEmision, MaterialReciclaje, RegistroConsumo, RegistroReciclaje, Temporada, Usuario
+from utils.modelos import ConceptoAmbiental, FactorEmision, RegistroAmbiental, Unidad, Usuario
+from utils.temporadas import (
+    TemporadaLogica, buscar_temporada, en_temporada, listar_temporadas, obtener_temporada, temporada_actual,
+    temporada_anterior, temporada_para_fecha,
+)
 
 router = APIRouter(prefix="/ambiente")
 
-CONCEPTOS = {
-    "combustible_diesel": ("Diésel", "L"),
-    "combustible_gasolina": ("Bencina", "L"),
-    "combustible_gas": ("Gas", "kg"),
-    "electricidad": ("Electricidad", "kWh"),
-    "fertilizante_n": ("Fertilizante nitrogenado", "kg"),
-    "fertilizante_no_n": ("Fertilizante no nitrogenado", "kg"),
-}
+RECICLAJE = "reciclaje"
 # Administrativos y jefes de área (rol encargado) solo registran y ven combustibles
-CONCEPTOS_ENCARGADO = ("combustible_diesel", "combustible_gasolina", "combustible_gas")
-
-
-def _conceptos_visibles(usuario: Usuario) -> tuple[str, ...]:
-    return CONCEPTOS_ENCARGADO if usuario.rol == "encargado" else tuple(CONCEPTOS)
+CATEGORIAS_ENCARGADO = ("combustible",)
 
 
 class ConsumoEntrada(BaseModel):
     unidad_id: int
     fecha: date
-    concepto: str
+    concepto: str  # código del concepto: combustible_diesel, electricidad...
     cantidad: float = Field(ge=0)
-    unidad_medida: str | None = None
+    unidad_medida: str | None = None  # la define el concepto; se acepta por compatibilidad
 
 
 class ReciclajeEntrada(BaseModel):
     unidad_id: int
     fecha: date
-    material_id: int
+    material_id: int  # concepto de categoría reciclaje
     kilos: float = Field(gt=0)
 
 
@@ -50,53 +43,70 @@ def no_encargado(usuario: Usuario = Depends(usuario_actual)) -> Usuario:
     return usuario
 
 
-def _temporada_id(db: Session, fecha: date) -> int:
-    temporada = temporada_para_fecha(db, fecha)
-    if not temporada:
+def _conceptos_consumo(db: Session, usuario: Usuario) -> list[ConceptoAmbiental]:
+    consulta = select(ConceptoAmbiental).where(ConceptoAmbiental.categoria != RECICLAJE, ConceptoAmbiental.activo)
+    if usuario.rol == "encargado":
+        consulta = consulta.where(ConceptoAmbiental.categoria.in_(CATEGORIAS_ENCARGADO))
+    return list(db.scalars(consulta.order_by(ConceptoAmbiental.id)))
+
+
+def _validar_fecha(db: Session, fecha: date, unidad_id: int) -> None:
+    unidad = obtener(db, Unidad, unidad_id)
+    if not temporada_para_fecha(db, fecha, unidad.empresa_id):
         raise HTTPException(400, "La fecha no cae en ninguna temporada registrada")
-    return temporada.id
+
+
+def _registros(db: Session, usuario: Usuario, empresa_id, unidad_id, temporada_id, reciclaje: bool):
+    consulta = select(RegistroAmbiental).join(ConceptoAmbiental).options(
+        selectinload(RegistroAmbiental.unidad), selectinload(RegistroAmbiental.concepto))
+    consulta = consulta.where((ConceptoAmbiental.categoria == RECICLAJE) if reciclaje
+                              else (ConceptoAmbiental.categoria != RECICLAJE))
+    consulta = filtrar_unidades(consulta, RegistroAmbiental.unidad_id, usuario, empresa_id, unidad_id)
+    return filtrar_temporada(db, consulta, temporada_id, RegistroAmbiental.fecha, RegistroAmbiental.unidad_id)
 
 
 @router.get("/conceptos")
-def conceptos(usuario: Usuario = Depends(usuario_actual)) -> list[dict]:
-    return [{"codigo": c, "nombre": CONCEPTOS[c][0], "unidad_medida": CONCEPTOS[c][1]}
-            for c in _conceptos_visibles(usuario)]
+def conceptos(usuario: Usuario = Depends(usuario_actual), db: Session = Depends(get_db)) -> list[dict]:
+    return [{"codigo": c.codigo, "nombre": c.nombre, "unidad_medida": c.unidad_medida}
+            for c in _conceptos_consumo(db, usuario)]
 
 
 @router.get("/factores")
 def factores(temporada_id: int | None = None, _: Usuario = Depends(no_encargado),
              db: Session = Depends(get_db)) -> list[dict]:
-    consulta = select(FactorEmision)
+    consulta = select(FactorEmision).options(selectinload(FactorEmision.concepto))
     if temporada_id:
-        consulta = consulta.where(FactorEmision.temporada_id == temporada_id)
-    return [{"id": f.id, "temporada_id": f.temporada_id, "concepto": f.concepto, "unidad_medida": f.unidad_medida,
-             "factor_kgco2e": f.factor_kgco2e, "fuente": f.fuente} for f in db.scalars(consulta)]
+        consulta = consulta.where(FactorEmision.temporada == obtener_temporada(db, temporada_id).nombre)
+    ids = {t.nombre: t.id for t in listar_temporadas(db)}
+    return [{"id": f.id, "temporada_id": ids.get(f.temporada), "temporada": f.temporada, "concepto": f.concepto.codigo,
+             "unidad_medida": f.concepto.unidad_medida, "factor_kgco2e": f.factor_kgco2e, "fuente": f.fuente}
+            for f in db.scalars(consulta)]
 
 
 @router.get("/consumos")
 def listar_consumos(empresa_id: int | None = None, unidad_id: int | None = None, temporada_id: int | None = None,
                     usuario: Usuario = Depends(usuario_actual), db: Session = Depends(get_db)) -> list[dict]:
-    consulta = filtrar_unidades(select(RegistroConsumo), RegistroConsumo.unidad_id, usuario, empresa_id, unidad_id)
-    consulta = consulta.where(RegistroConsumo.concepto.in_(_conceptos_visibles(usuario)))
-    if temporada_id:
-        consulta = consulta.where(RegistroConsumo.temporada_id == temporada_id)
-    return [{"id": r.id, "fecha": r.fecha, "concepto": r.concepto, "concepto_nombre": CONCEPTOS[r.concepto][0],
-             "cantidad": r.cantidad, "unidad_medida": r.unidad_medida, "unidad": unidad_dict(r.unidad)}
-            for r in db.scalars(consulta.order_by(RegistroConsumo.fecha.desc()))]
+    visibles = {c.id for c in _conceptos_consumo(db, usuario)}
+    consulta = _registros(db, usuario, empresa_id, unidad_id, temporada_id, reciclaje=False)
+    consulta = consulta.where(RegistroAmbiental.concepto_id.in_(visibles or {-1}))
+    return [{"id": r.id, "fecha": r.fecha, "concepto": r.concepto.codigo, "concepto_nombre": r.concepto.nombre,
+             "cantidad": r.cantidad, "unidad_medida": r.concepto.unidad_medida, "unidad": unidad_dict(r.unidad)}
+            for r in db.scalars(consulta.order_by(RegistroAmbiental.fecha.desc()))]
 
 
 @router.post("/consumos", status_code=201)
-def crear_consumo(datos: ConsumoEntrada, usuario: Usuario = Depends(puede_escribir),
+def crear_consumo(datos: ConsumoEntrada, usuario: Usuario = Depends(requiere_permiso(AMBIENTE)),
                   db: Session = Depends(get_db)) -> dict:
     verificar_unidad(usuario, datos.unidad_id)
-    if datos.concepto not in _conceptos_visibles(usuario):
+    concepto = next((c for c in _conceptos_consumo(db, usuario) if c.codigo == datos.concepto), None)
+    if concepto is None:
         raise HTTPException(400, "Concepto inválido")
-    registro = RegistroConsumo(**datos.model_dump(exclude={"unidad_medida"}),
-                               unidad_medida=datos.unidad_medida or CONCEPTOS[datos.concepto][1],
-                               temporada_id=_temporada_id(db, datos.fecha), creado_por_id=usuario.id)
+    _validar_fecha(db, datos.fecha, datos.unidad_id)
+    registro = RegistroAmbiental(unidad_id=datos.unidad_id, concepto_id=concepto.id, fecha=datos.fecha,
+                                 cantidad=datos.cantidad, creado_por_id=usuario.id)
     db.add(registro)
     db.flush()
-    registrar(db, usuario, "crear", "consumo", registro.id, datos.model_dump(mode="json"))
+    registrar(db, usuario, "crear", "consumo", registro.id, datos.model_dump(mode="json", exclude={"unidad_medida"}))
     db.commit()
     return {"id": registro.id}
 
@@ -104,20 +114,21 @@ def crear_consumo(datos: ConsumoEntrada, usuario: Usuario = Depends(puede_escrib
 @router.get("/reciclaje")
 def listar_reciclaje(empresa_id: int | None = None, unidad_id: int | None = None, temporada_id: int | None = None,
                      usuario: Usuario = Depends(no_encargado), db: Session = Depends(get_db)) -> list[dict]:
-    consulta = filtrar_unidades(select(RegistroReciclaje), RegistroReciclaje.unidad_id, usuario, empresa_id, unidad_id)
-    if temporada_id:
-        consulta = consulta.where(RegistroReciclaje.temporada_id == temporada_id)
-    return [{"id": r.id, "fecha": r.fecha, "material": r.material.nombre, "kilos": r.kilos,
-             "unidad": unidad_dict(r.unidad)} for r in db.scalars(consulta.order_by(RegistroReciclaje.fecha.desc()))]
+    consulta = _registros(db, usuario, empresa_id, unidad_id, temporada_id, reciclaje=True)
+    return [{"id": r.id, "fecha": r.fecha, "material": r.concepto.nombre, "kilos": r.cantidad,
+             "unidad": unidad_dict(r.unidad)} for r in db.scalars(consulta.order_by(RegistroAmbiental.fecha.desc()))]
 
 
 @router.post("/reciclaje", status_code=201)
 def crear_reciclaje(datos: ReciclajeEntrada, usuario: Usuario = Depends(solo_certificaciones),
                     db: Session = Depends(get_db)) -> dict:
     verificar_unidad(usuario, datos.unidad_id)
-    obtener(db, MaterialReciclaje, datos.material_id)
-    registro = RegistroReciclaje(**datos.model_dump(), temporada_id=_temporada_id(db, datos.fecha),
-                                 creado_por_id=usuario.id)
+    material = obtener(db, ConceptoAmbiental, datos.material_id)
+    if material.categoria != RECICLAJE:
+        raise HTTPException(400, "Material de reciclaje inválido")
+    _validar_fecha(db, datos.fecha, datos.unidad_id)
+    registro = RegistroAmbiental(unidad_id=datos.unidad_id, concepto_id=material.id, fecha=datos.fecha,
+                                 cantidad=datos.kilos, creado_por_id=usuario.id)
     db.add(registro)
     db.flush()
     registrar(db, usuario, "crear", "reciclaje", registro.id, datos.model_dump(mode="json"))
@@ -125,42 +136,50 @@ def crear_reciclaje(datos: ReciclajeEntrada, usuario: Usuario = Depends(solo_cer
     return {"id": registro.id}
 
 
-def calcular_huella(db: Session, registros: list[RegistroConsumo]) -> dict:
+def _factores(db: Session) -> dict[tuple[str, int], float]:
+    """(nombre de temporada, concepto_id) -> kg CO2e por unidad del concepto."""
+    return {(f.temporada, f.concepto_id): f.factor_kgco2e for f in db.scalars(select(FactorEmision))}
+
+
+def _factor(db: Session, factores: dict, r: RegistroAmbiental) -> float | None:
+    t = temporada_para_fecha(db, r.fecha, r.unidad.empresa_id)
+    return factores.get((t.nombre, r.concepto_id)) if t else None
+
+
+def calcular_huella(db: Session, registros: list[RegistroAmbiental]) -> dict:
     """kg CO2e por concepto y por mes, con el factor de la temporada de cada registro."""
-    factores = {(f.temporada_id, f.concepto): f.factor_kgco2e for f in db.scalars(select(FactorEmision))}
+    factores = _factores(db)
     por_concepto: dict[str, float] = {}
     por_mes: dict[str, float] = {}
     sin_factor: set[str] = set()
     for r in registros:
-        factor = factores.get((r.temporada_id, r.concepto))
+        factor = _factor(db, factores, r)
         if factor is None:
-            sin_factor.add(r.concepto)
+            sin_factor.add(r.concepto.nombre)
             continue
         kg = r.cantidad * factor
-        por_concepto[r.concepto] = por_concepto.get(r.concepto, 0) + kg
+        por_concepto[r.concepto.nombre] = por_concepto.get(r.concepto.nombre, 0) + kg
         mes = r.fecha.strftime("%Y-%m")
         por_mes[mes] = por_mes.get(mes, 0) + kg
     return {
         "total_tco2e": round(sum(por_concepto.values()) / 1000, 2),
-        "por_concepto": [{"concepto": CONCEPTOS[c][0], "tco2e": round(v / 1000, 2)} for c, v in por_concepto.items()],
+        "por_concepto": [{"concepto": c, "tco2e": round(v / 1000, 2)} for c, v in por_concepto.items()],
         "por_mes": [{"mes": m, "tco2e": round(v / 1000, 2)} for m, v in sorted(por_mes.items())],
-        "conceptos_sin_factor": [CONCEPTOS[c][0] for c in sin_factor],
+        "conceptos_sin_factor": sorted(sin_factor),
     }
 
 
 @router.get("/huella")
 def huella(empresa_id: int | None = None, unidad_id: int | None = None, temporada_id: int | None = None,
            usuario: Usuario = Depends(no_encargado), db: Session = Depends(get_db)) -> dict:
-    consulta = filtrar_unidades(select(RegistroConsumo), RegistroConsumo.unidad_id, usuario, empresa_id, unidad_id)
-    if temporada_id:
-        consulta = consulta.where(RegistroConsumo.temporada_id == temporada_id)
+    consulta = _registros(db, usuario, empresa_id, unidad_id, temporada_id, reciclaje=False)
     return calcular_huella(db, list(db.scalars(consulta)))
 
 
 # ---------- Comparativa entre temporadas ----------
 
 MESES_CORTOS = ["ene", "feb", "mar", "abr", "may", "jun", "jul", "ago", "sep", "oct", "nov", "dic"]
-# Agrupación de conceptos para los indicadores del panel
+# Agrupación de conceptos (por código) para los indicadores del panel
 GRUPOS_CONCEPTO = {
     "combustibles": ("combustible_diesel", "combustible_gasolina"),
     "gas": ("combustible_gas",),
@@ -169,7 +188,7 @@ GRUPOS_CONCEPTO = {
 }
 
 
-def _meses_temporada(t: Temporada) -> list[tuple[int, int]]:
+def _meses_temporada(t: TemporadaLogica) -> list[tuple[int, int]]:
     """Los 12 (año, mes) de una temporada, desde su inicio."""
     meses, anio, mes = [], t.inicio.year, t.inicio.month
     for _ in range(12):
@@ -207,42 +226,39 @@ def comparativa(empresa_id: int | None = None, unidad_id: int | None = None, tem
                 db: Session = Depends(get_db)) -> dict:
     """Temporada elegida (o la actual) contra la anterior al mismo período: si la actual lleva 3 meses con
     datos, se compara con los mismos 3 meses de la anterior. Incluye la anterior completa y una proyección."""
-    actual = db.get(Temporada, temporada_id) if temporada_id else temporada_actual(db)
+    actual = buscar_temporada(db, temporada_id) if temporada_id else temporada_actual(db)
     if actual is None:
         raise HTTPException(404, "No hay una temporada para comparar")
     if anterior_id:
         # Comparación elegida por el usuario: cualquier otra temporada
         if anterior_id == actual.id:
             raise HTTPException(400, "Elige dos temporadas distintas")
-        anterior = obtener(db, Temporada, anterior_id)
+        anterior = obtener_temporada(db, anterior_id)
     else:
-        anterior = db.scalar(select(Temporada).where(Temporada.inicio < actual.inicio).order_by(Temporada.inicio.desc()))
-    factores = {(f.temporada_id, f.concepto): f.factor_kgco2e for f in db.scalars(select(FactorEmision))}
+        anterior = temporada_anterior(db, actual)
+    factores = _factores(db)
 
-    def registros(modelo, t: Temporada | None) -> list:
+    def registros(t: TemporadaLogica | None, reciclaje: bool) -> list[RegistroAmbiental]:
         if t is None:
             return []
-        consulta = filtrar_unidades(select(modelo), modelo.unidad_id, usuario, empresa_id, unidad_id)
-        return list(db.scalars(consulta.where(modelo.temporada_id == t.id)))
+        consulta = _registros(db, usuario, empresa_id, unidad_id, None, reciclaje)
+        return list(db.scalars(consulta.where(en_temporada(t, RegistroAmbiental.fecha, RegistroAmbiental.unidad_id))))
 
     idx_act = {m: i for i, m in enumerate(_meses_temporada(actual))}
     idx_ant = {m: i for i, m in enumerate(_meses_temporada(anterior))} if anterior else {}
-    reg_act, reg_ant = registros(RegistroConsumo, actual), registros(RegistroConsumo, anterior)
-    rec_act, rec_ant = registros(RegistroReciclaje, actual), registros(RegistroReciclaje, anterior)
+    reg_act, reg_ant = registros(actual, False), registros(anterior, False)
+    rec_act, rec_ant = registros(actual, True), registros(anterior, True)
 
     # Meses con datos en la temporada actual: definen el "mismo período" de la comparación
     con_datos = [idx_act[(r.fecha.year, r.fecha.month)] for r in reg_act + rec_act
                  if (r.fecha.year, r.fecha.month) in idx_act]
     n = max(con_datos) + 1 if con_datos else 0
 
-    def tco2e(r: RegistroConsumo) -> float:
-        return r.cantidad * factores.get((r.temporada_id, r.concepto), 0) / 1000
+    def tco2e(r: RegistroAmbiental) -> float:
+        return r.cantidad * (_factor(db, factores, r) or 0) / 1000
 
-    def cantidad(r) -> float:
+    def cantidad(r: RegistroAmbiental) -> float:
         return r.cantidad
-
-    def kilos(r) -> float:
-        return r.kilos
 
     def comparar(sel_act, sel_ant, valor) -> tuple[list[float], list[float], float, float]:
         m_act, m_ant = _por_mes(sel_act, idx_act, valor), _por_mes(sel_ant, idx_ant, valor)
@@ -257,14 +273,17 @@ def comparativa(empresa_id: int | None = None, unidad_id: int | None = None, tem
     else:
         proyeccion = None
 
+    catalogo = list(db.scalars(select(ConceptoAmbiental).order_by(ConceptoAmbiental.id)))
     conceptos = []
-    for codigo, (nombre, unidad_medida) in CONCEPTOS.items():
-        sel_act = [r for r in reg_act if r.concepto == codigo]
-        sel_ant = [r for r in reg_ant if r.concepto == codigo]
+    for c in catalogo:
+        if c.categoria == RECICLAJE:
+            continue
+        sel_act = [r for r in reg_act if r.concepto_id == c.id]
+        sel_ant = [r for r in reg_ant if r.concepto_id == c.id]
         _, _, c_act, c_ant = comparar(sel_act, sel_ant, cantidad)
         _, _, t_act, t_ant = comparar(sel_act, sel_ant, tco2e)
         if c_act or c_ant:
-            conceptos.append({"codigo": codigo, "nombre": nombre, "unidad_medida": unidad_medida,
+            conceptos.append({"codigo": c.codigo, "nombre": c.nombre, "unidad_medida": c.unidad_medida,
                               "actual": round(c_act), "anterior": round(c_ant),
                               "tco2e_actual": round(t_act, 2), "tco2e_anterior": round(t_ant, 2),
                               "variacion": _variacion(c_act, c_ant)})
@@ -274,16 +293,20 @@ def comparativa(empresa_id: int | None = None, unidad_id: int | None = None, tem
                 "variacion": _variacion(total_act, total_ant),
                 "mensual_actual": [round(v) for v in m_act[:n]], "mensual_anterior": [round(v) for v in m_ant]}
 
+    unidades_medida = {c.codigo: c.unidad_medida for c in catalogo}
     indicadores = {}
     for clave, codigos in GRUPOS_CONCEPTO.items():
-        res = comparar([r for r in reg_act if r.concepto in codigos], [r for r in reg_ant if r.concepto in codigos], cantidad)
-        indicadores[clave] = indicador(*res, CONCEPTOS[codigos[0]][1])
-    indicadores["reciclaje"] = indicador(*comparar(rec_act, rec_ant, kilos), "kg")
+        res = comparar([r for r in reg_act if r.concepto.codigo in codigos],
+                       [r for r in reg_ant if r.concepto.codigo in codigos], cantidad)
+        indicadores[clave] = indicador(*res, unidades_medida.get(codigos[0], ""))
+    indicadores["reciclaje"] = indicador(*comparar(rec_act, rec_ant, cantidad), "kg")
 
     materiales = []
-    for material in db.scalars(select(MaterialReciclaje)):
-        _, _, k_act, k_ant = comparar([r for r in rec_act if r.material_id == material.id],
-                                      [r for r in rec_ant if r.material_id == material.id], kilos)
+    for material in catalogo:
+        if material.categoria != RECICLAJE:
+            continue
+        _, _, k_act, k_ant = comparar([r for r in rec_act if r.concepto_id == material.id],
+                                      [r for r in rec_ant if r.concepto_id == material.id], cantidad)
         if k_act or k_ant:
             materiales.append({"nombre": material.nombre, "actual": round(k_act), "anterior": round(k_ant),
                                "variacion": _variacion(k_act, k_ant)})

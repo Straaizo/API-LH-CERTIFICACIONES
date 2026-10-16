@@ -70,8 +70,9 @@ API FastAPI (Cloud Run, southamerica-west1)  ──►  Cloud Storage (archivos,
         │  IP privada
         ▼
 Cloud SQL (lahornilla_base_normalizada)
-   ├── tablas propias:     certificaciones_dim_* · certificaciones_fact_* · certificaciones_pivot_*
-   └── tablas compartidas: general_dim_sucursal · general_dim_usuario · usuario_pivot_app_usuario
+   ├── tablas propias:     certificaciones_dim_* · certificaciones_fact_* · certificaciones_pivot_* · vistas certificaciones_vw_*
+   └── tablas compartidas: general_dim_empresa · general_dim_sucursal · general_dim_sucursaltipo · general_dim_temporada
+                           general_dim_usuario · general_dim_app · usuario_dim_permiso · usuario_pivot_* (portal web)
 ```
 
 - La API es la **única** que se conecta a la base: la aplicación le pide todo a la API.
@@ -82,12 +83,15 @@ Cloud SQL (lahornilla_base_normalizada)
 
 | Tipo | Prefijo | Qué guarda |
 |---|---|---|
-| Dimensión | `certificaciones_dim_*` | Catálogos y entidades que cambian poco: empresas, normas y sus versiones, puntos de control, plantillas, tipos de análisis |
-| Hecho | `certificaciones_fact_*` | Lo que ocurre en el tiempo: auditorías, respuestas, no conformidades, registros, análisis, consumos, bitácora |
-| Puente | `certificaciones_pivot_*` | Relaciones muchos a muchos, como las sucursales que cubre un certificado |
+| Dimensión | `certificaciones_dim_*` | Catálogos y entidades que cambian poco: normas y sus versiones, puntos de control, plantillas, tipos de análisis, conceptos ambientales |
+| Hecho | `certificaciones_fact_*` | Lo que ocurre en el tiempo: auditorías, respuestas, no conformidades, registros, análisis, consumos y reciclaje, bitácora |
+| Puente | `certificaciones_pivot_sucursal_protocolo` | Única relación muchos a muchos: qué normas tiene cada sucursal |
+| Vista | `certificaciones_vw_*` | Temporadas desde 2024, vencimientos, huella y análisis por temporada, estado de las NC y tablero |
 
-- **Tablas compartidas de la empresa**: usuarios, sucursales y acceso a aplicaciones se leen de las tablas que ya existen en la base de La Hornilla. Certificaciones nunca las modifica.
-- La asignación de cada sucursal a su empresa (por ejemplo, Itahue como Viento Sur) vive solo en las tablas de Certificaciones.
+- **Tablas compartidas de la empresa**: empresas, sucursales (con su empresa y su tipo: campo, packing…), temporadas (mayo a abril, por empresa) y usuarios se leen de las tablas que ya existen en la base de La Hornilla. Certificaciones nunca las modifica.
+- **Acceso y permisos**: los da el portal web. El usuario entra con su usuario o correo y clave (como en LH Inventario), necesita acceso a la app y ve solo sus sucursales. Lo que puede editar sale de sus permisos (`CERTIFICACIONES_ADMIN`, `REGISTROS_EDITAR`, `NC_EDITAR`, `LABORATORIO_EDITAR`, `AMBIENTE_EDITAR`, `CERTIFICACIONES_VER`).
+- **Temporada**: no se guarda en cada dato; se deduce de su fecha y de la empresa de la sucursal.
+- Diagrama, tablas y script de creación: `docs/modelo-datos/` (carpeta del proyecto, fuera de este repositorio) y `migrations/`.
 
 ---
 
@@ -95,6 +99,7 @@ Cloud SQL (lahornilla_base_normalizada)
 
 | Módulo | Para qué sirve |
 |---|---|
+| 🔐 Sesión | Inicio de sesión con usuario o correo + clave del portal web y renovación del token |
 | 📍 Catálogos | Empresas, sucursales, temporadas, protocolos y usuarios que usa toda la aplicación |
 | 📄 Documentos fijos | Documentos por sección (campo, planta, empresarial), versiones, fichas de certificados y vencimientos |
 | 📝 Registros | Plantillas importadas desde Word y registros llenados en terreno, con revisión y aprobación |
@@ -114,6 +119,7 @@ API-CERTIFICACIONES/
 ├── main.py                    # Entrada de la API: módulos bajo /api, seguridad y documentación
 ├── config.py                  # Configuración
 ├── routers/                   # Un archivo por módulo
+│   ├── auth.py                # Inicio de sesión (JWT)
 │   ├── catalogos.py
 │   ├── archivos.py            # Subida y descarga de archivos
 │   ├── documentos.py          # Documentos fijos, versiones, certificados y vencimientos
@@ -126,8 +132,9 @@ API-CERTIFICACIONES/
 │   └── carpeta.py
 ├── schemas/                   # Validación de los datos de entrada
 ├── utils/
-│   ├── modelos.py             # Tablas
-│   ├── auth.py                # Usuario actual y permisos por rol y sucursal
+│   ├── modelos.py             # Tablas propias y compartidas
+│   ├── auth.py                # Sesión (JWT), acceso a la app y permisos por módulo y sucursal
+│   ├── temporadas.py          # Temporadas por empresa desde general_dim_temporada
 │   ├── almacenamiento.py      # Archivos en Cloud Storage
 │   ├── analizar_documento.py  # Qué documento es un archivo subido y con qué completarlo
 │   ├── leer_certificado.py    # Ficha de un certificado desde su PDF

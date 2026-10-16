@@ -1,6 +1,8 @@
 """Crea la base de DEMO local (SQLite en privado/demo.db) desde cero.
 
-- Catálogos según docs/requerimientos.md (sitios de LH, protocolos, categorías, análisis).
+- Copia de ejemplo de las tablas compartidas (general_* y usuario_*): empresas, sucursales y temporadas con los
+  ids de lahornilla_base_normalizada; usuarios ficticios con acceso a la app y sus permisos y sucursales.
+- Catálogos según docs/requerimientos.md (protocolos y sus sucursales, categorías, análisis, medio ambiente).
 - Importa las planillas reales de ../referencias si existen (quedan solo en privado/, fuera de git).
 - Agrega datos FICTICIOS de ejemplo (documentos, análisis, ambiente) con fechas relativas a hoy.
 
@@ -9,6 +11,7 @@ Uso, desde API-CERTIFICACIONES/:  python -m scripts.crear_demo   (o python scrip
 import random
 import shutil
 import sys
+import uuid
 from datetime import date, timedelta
 from pathlib import Path
 
@@ -23,17 +26,20 @@ from config import Config  # noqa: E402
 if Config.DB_MOTOR != "sqlite":
     sys.exit("Este script solo crea la base de demo SQLite. No se ejecuta contra Cloud SQL.")
 
-from sqlalchemy import select  # noqa: E402
+from sqlalchemy import insert, select  # noqa: E402
 from sqlalchemy.orm import Session  # noqa: E402
 
 from utils import almacenamiento  # noqa: E402
 from utils.db import Base, SessionLocal, engine  # noqa: E402
 from utils.modelos import (  # noqa: E402
-    AccionCorrectiva, Analisis, Area, Auditoria, Bitacora, Especie, PlantillaRegistro, Registro, Respuesta, Capacitacion, CategoriaDocumento, Certificacion, Documento, DocumentoVersion,
-    Empresa, FactorEmision, FuenteAgua, LimiteParametro, MaterialReciclaje, NoConformidad, Protocolo,
-    RegistroConsumo, RegistroReciclaje, Requisito, ResultadoAnalisis, Temporada, TipoAnalisis, Ubicacion, Unidad,
-    Usuario, VersionNorma,
+    AccionCorrectiva, Analisis, App, Area, Auditoria, Bitacora, Capacitacion, CategoriaDocumento, Certificacion,
+    ConceptoAmbiental, Documento, DocumentoVersion, Empresa, Especie, FactorEmision, FuenteAgua, LimiteParametro,
+    NoConformidad, Permiso, PlantillaRegistro, Protocolo, Registro, RegistroAmbiental, Requisito, Respuesta,
+    ResultadoAnalisis, SucursalTipo, Temporada, TipoAnalisis, Unidad, Usuario, VersionNorma, usuario_apps,
+    usuario_permisos, usuario_sucursales,
 )
+from routers.documentos import es_del_sitio, lugares_conocidos  # noqa: E402
+from utils.temporadas import TemporadaLogica, temporada_anterior, temporada_para_fecha  # noqa: E402
 from utils.leer_certificado import leer_certificado  # noqa: E402
 from utils.no_conformidades import recalcular_reincidencias, sincronizar_nc  # noqa: E402
 from utils.servicio_importacion import importar_brcgs, importar_checklist  # noqa: E402
@@ -42,9 +48,26 @@ from utils.hora import ahora
 HOY = date.today()
 random.seed(42)
 
-# Sitios según los certificados 2025-2026 (14 de octubre de 2026): LH agrega Hospital; VS solo tiene Itahue
-UBICACIONES_LH = ["Chocalán", "Maitén Gigante", "San Manuel", "Cullipeumo", "Santa Victoria", "Santa Inés", "Hospital"]
-UBICACIONES_VS = ["Itahue"]
+# Tablas compartidas: ids y nombres de lahornilla_base_normalizada (15 de octubre de 2026), sin direcciones
+EMPRESAS = [(1, "LA HORNILLA SPA"), (2, "VIENTO SUR")]
+TIPOS_SUCURSAL = [(1, "CAMPO"), (2, "PACKING"), (3, "OTRO"), (4, "VIVERO"), (5, "OFICINA")]
+# id, nombre, empresa, tipo. Itahue es de Viento Sur
+SUCURSALES = [
+    (101, "OFICINA CENTRAL", 1, 5),
+    (102, "SAN MANUEL", 1, 1), (103, "SANTA VICTORIA", 1, 1), (104, "CULLIPEUMO", 1, 1), (105, "CAMPO CHOCALAN", 1, 1),
+    (106, "SANTA INES", 1, 1), (107, "MAITEN GIGANTE", 1, 1), (108, "HOSPITAL", 1, 1),
+    (113, "PACKING PAINE", 1, 2), (114, "PACKING MG", 1, 2), (116, "PACKING SI", 1, 2), (117, "PACKING HO", 1, 2),
+    (118, "PLANTA CHOCALAN", 1, 2), (199, "FUNDO QA", 1, 1),
+    (201, "ITAHUE", 2, 1),
+]
+# Claves que usa este script para referirse a cada sucursal
+CLAVES_SUCURSAL = {
+    "Campo San Manuel": 102, "Campo Santa Victoria": 103, "Campo Cullipeumo": 104, "Campo Chocalán": 105,
+    "Campo Santa Inés": 106, "Campo Maitén Gigante": 107, "Campo Hospital": 108, "Packing Paine": 113,
+    "Packing MG": 114, "Planta Chocalán": 118, "Campo Itahue": 201,
+}
+PERMISOS = ["CERTIFICACIONES_ADMIN", "REGISTROS_EDITAR", "NC_EDITAR", "LABORATORIO_EDITAR", "AMBIENTE_EDITAR",
+            "CERTIFICACIONES_VER"]
 AREAS_PLANTA_CHOCALAN = ["Packing Unitec", "Packing cerezas", "Packing carozos", "Frío 1", "Frío 2", "Cámara 5",
                          "Zona sucia Unitec", "Patio", "Casino", "Baños", "Laboratorios", "Zona de desechos",
                          "Maestranza"]
@@ -56,10 +79,17 @@ PROTOCOLOS = [
     ("SMETA", "SMETA", "ambos"), ("TESCO_TMPS", "Tesco TMPS", "ambos"), ("WALMART", "Walmart", "ambos"),
     ("GLOBALGAP", "GLOBALG.A.P. (IFA v6 GFS)", "campo"), ("GRASP", "GRASP", "campo"), ("GROW", "GROW", "campo"),
     ("LEAF", "LEAF", "campo"), ("SPRING", "SPRING", "campo"), ("TESCO_NURTURE", "Tesco Nurture", "campo"),
-    ("PRIMUSGFS", "PrimusGFS", "campo"), ("FSMA_PSR", "FSMA PSR", "campo"),
+    ("PRIMUSGFS", "PrimusGFS", "planta"), ("FSMA_PSR", "FSMA PSR", "campo"),
 ]
-# PrimusGFS solo en los campos con packing
-PRIMUS_EN = ["Campo Maitén Gigante", "Campo Santa Victoria"]
+# Normas de cada sucursal (certificaciones_pivot_sucursal_protocolo). Propuesta del 15 de octubre de 2026;
+# SMETA, Tesco TMPS, Walmart y GROW quedan sin sucursales hasta confirmarlo con Loreto
+CAMPOS_NORMAS = [102, 103, 104, 105, 106, 107, 108, 201]
+NORMAS_POR_SUCURSAL = {
+    "GLOBALGAP": CAMPOS_NORMAS, "GRASP": CAMPOS_NORMAS, "SPRING": CAMPOS_NORMAS, "TESCO_NURTURE": CAMPOS_NORMAS,
+    "LEAF": CAMPOS_NORMAS, "FSMA_PSR": CAMPOS_NORMAS,
+    "PRIMUSGFS": [113, 114],  # packing Santa Victoria (Paine) y Maitén Gigante
+    "BRCGS": [118],
+}
 SECCIONES_BRCGS_V9 = [
     ("1", "Compromiso del equipo directivo"), ("2", "Plan de inocuidad alimentaria: HACCP"),
     ("3", "Sistema de gestión de calidad e inocuidad alimentaria"), ("4", "Normas relativas al establecimiento"),
@@ -88,20 +118,19 @@ TIPOS_ANALISIS = {
     "Fruta": (False, True, [("Calcio", "mg/100 g", 4, None)]),
     "MRL": (False, False, [("Clorpirifos", "mg/kg", None, 0.01), ("Captan", "mg/kg", None, 3.0)]),
 }
-# Especies por campo: ejemplo ficticio, pendiente de confirmar con el cliente
-ESPECIES_POR_CAMPO = {
-    "Campo Chocalán": ["Cerezo", "Ciruelo"],
-    "Campo Maitén Gigante": ["Duraznero", "Ciruelo"],
-    "Campo Itahue": ["Cerezo", "Nectarino"],
-    "Campo San Manuel": ["Cerezo"],
-    "Campo Cullipeumo": ["Ciruelo", "Nectarino"],
-    "Campo Santa Victoria": ["Cerezo", "Duraznero"],
-    "Campo Santa Inés": ["Cerezo"],
-}
-FACTORES_DEMO = [  # concepto, unidad, kg CO2e por unidad (valores referenciales de demo)
-    ("combustible_diesel", "L", 2.68), ("combustible_gasolina", "L", 2.31), ("combustible_gas", "kg", 2.94),
-    ("electricidad", "kWh", 0.29),
-    ("fertilizante_n", "kg", 5.88), ("fertilizante_no_n", "kg", 0.6),
+ESPECIES = ["Cerezo", "Ciruelo", "Duraznero", "Nectarino"]
+# Conceptos de medio ambiente: código, nombre, categoría, unidad, kg CO2e por unidad (valor referencial de demo)
+CONCEPTOS_AMBIENTALES = [
+    ("combustible_diesel", "Diésel", "combustible", "L", 2.68),
+    ("combustible_gasolina", "Bencina", "combustible", "L", 2.31),
+    ("combustible_gas", "Gas", "combustible", "kg", 2.94),
+    ("electricidad", "Electricidad", "electricidad", "kWh", 0.29),
+    ("fertilizante_n", "Fertilizante nitrogenado", "fertilizante", "kg", 5.88),
+    ("fertilizante_no_n", "Fertilizante no nitrogenado", "fertilizante", "kg", 0.6),
+    ("plastico_film", "Plástico film", "reciclaje", "kg", None),
+    ("envases_agroquimicos", "Envases de agroquímicos (triple lavado)", "reciclaje", "kg", None),
+    ("carton", "Cartón", "reciclaje", "kg", None),
+    ("bins_plasticos", "Bins plásticos", "reciclaje", "kg", None),
 ]
 
 
@@ -135,36 +164,56 @@ def archivo_demo(prefijo: str, titulo: str) -> tuple[str, str]:
     return clave, nombre
 
 
-def temporada_de(db: Session, fecha: date) -> Temporada:
-    return db.scalar(select(Temporada).where(Temporada.inicio <= fecha, Temporada.fin >= fecha))
+def temporada_de(db: Session, fecha: date) -> TemporadaLogica:
+    return temporada_para_fecha(db, fecha, 1)
+
+
+def _id_corto(*partes: str) -> str:
+    """Id determinista (las tablas del portal usan UUID): así el usuario elegido en la demo sobrevive a regenerarla."""
+    return str(uuid.uuid5(uuid.NAMESPACE_URL, "certificaciones-demo/" + "/".join(partes)))
+
+
+def crear_generales(db: Session) -> dict[str, Unidad]:
+    """Copia de ejemplo de las tablas compartidas (en GCP ya existen y no se tocan)."""
+    db.add_all([Empresa(id=i, nombre=n) for i, n in EMPRESAS])
+    db.add_all([SucursalTipo(id=i, nombre=n) for i, n in TIPOS_SUCURSAL])
+    db.flush()
+    db.add_all([Unidad(id=i, nombre=n, empresa_id=e, tipo_id=t) for i, n, e, t in SUCURSALES])
+    # Temporadas por empresa, mayo a abril; las anteriores a 24-25 no tienen fechas (como en la tabla real)
+    n = 1
+    for empresa_id, _ in EMPRESAS:
+        for anio in range(2022, HOY.year + 1):
+            con_fechas = anio >= 2024
+            db.add(Temporada(id=n, temporada=f"{anio % 100:02d}-{(anio + 1) % 100:02d}", empresa_id=empresa_id,
+                             inicio=date(anio, 5, 1) if con_fechas else None,
+                             fin=date(anio + 1, 4, 30) if con_fechas else None))
+            n += 1
+    db.add(App(id=Config.APP_ID, nombre="CERTIFICACIONES", descripcion="Certificaciones VS y LH"))
+    db.flush()
+    for codigo in PERMISOS:
+        db.add(Permiso(id=_id_corto("permiso", codigo), nombre=codigo, app_id=Config.APP_ID, id_estado=1))
+    db.flush()
+    return {clave: db.get(Unidad, i) for clave, i in CLAVES_SUCURSAL.items()}
+
+
+def crear_usuario(db: Session, clave: str, nombre: str, permisos: list[str], sucursales: list[Unidad]) -> Usuario:
+    """Usuario ficticio con acceso a la app. La clave no es un hash bcrypt: no se puede iniciar sesión con él."""
+    usuario = Usuario(id=_id_corto("usuario", clave), usuario=f"demo.{clave}", correo=f"{clave}@demo.local",
+                      clave="!sin-clave", nombre=nombre, id_estado=1)
+    db.add(usuario)
+    db.flush()
+    db.execute(insert(usuario_apps).values(id=_id_corto("app", clave), id_usuario=usuario.id, id_app=Config.APP_ID))
+    for codigo in permisos:
+        db.execute(insert(usuario_permisos).values(id=_id_corto("pu", clave, codigo)[:25], id_usuario=usuario.id,
+                                                   id_permiso=_id_corto("permiso", codigo)))
+    for s in sucursales:
+        db.execute(insert(usuario_sucursales).values(id_sucursal=s.id, id_usuario=usuario.id))
+    return usuario
 
 
 def crear_catalogos(db: Session) -> dict:
-    # Temporadas julio a junio (supuesto pendiente de confirmar)
-    for anio in range(HOY.year - 3, HOY.year + 1):
-        db.add(Temporada(nombre=f"{anio}-{anio + 1}", inicio=date(anio, 7, 1), fin=date(anio + 1, 6, 30)))
-
-    lh = Empresa(codigo="LH", nombre="Agrícola La Hornilla")
-    vs = Empresa(codigo="VS", nombre="Agrícola Viento Sur")
-    db.add_all([lh, vs])
-    db.flush()
-    u: dict[str, Unidad] = {}
-    for nombre in UBICACIONES_LH:
-        ub = Ubicacion(empresa_id=lh.id, nombre=nombre)
-        db.add(ub)
-        db.flush()
-        u[f"Campo {nombre}"] = Unidad(ubicacion_id=ub.id, tipo="campo")
-        db.add(u[f"Campo {nombre}"])
-        if nombre == "Chocalán":
-            u["Planta Chocalán"] = Unidad(ubicacion_id=ub.id, tipo="planta")
-            db.add(u["Planta Chocalán"])
-    for nombre in UBICACIONES_VS:
-        ub = Ubicacion(empresa_id=vs.id, nombre=nombre)
-        db.add(ub)
-        db.flush()
-        u[f"Campo {nombre}"] = Unidad(ubicacion_id=ub.id, tipo="campo")
-        db.add(u[f"Campo {nombre}"])
-    db.flush()
+    u = crear_generales(db)
+    lh, vs = db.get(Empresa, 1), db.get(Empresa, 2)
 
     for area in AREAS_PLANTA_CHOCALAN:
         db.add(Area(unidad_id=u["Planta Chocalán"].id, nombre=area))
@@ -174,7 +223,7 @@ def crear_catalogos(db: Session) -> dict:
 
     for codigo, nombre, ambito in PROTOCOLOS:
         db.add(Protocolo(codigo=codigo, nombre=nombre, ambito=ambito,
-                         unidades=[u[x] for x in PRIMUS_EN] if codigo == "PRIMUSGFS" else []))
+                         unidades=[db.get(Unidad, i) for i in NORMAS_POR_SUCURSAL.get(codigo, [])]))
     db.flush()
     brc = db.scalar(select(Protocolo).where(Protocolo.codigo == "BRCGS"))
     db.add(VersionNorma(protocolo_id=brc.id, nombre="v9", secciones=[{"codigo": c, "titulo": t}
@@ -183,11 +232,7 @@ def crear_catalogos(db: Session) -> dict:
     for i, (nombre, ambito, venc, cod) in enumerate(CATEGORIAS):
         db.add(CategoriaDocumento(nombre=nombre, ambito=ambito, requiere_vencimiento=venc, requiere_codigo=cod,
                                   orden=i))
-    especies: dict[str, Especie] = {}
-    for unidad, nombres in ESPECIES_POR_CAMPO.items():
-        for nombre in nombres:
-            especies.setdefault(nombre, Especie(nombre=nombre)).unidades.append(u[unidad])
-    db.add_all(especies.values())
+    db.add_all([Especie(nombre=nombre) for nombre in ESPECIES])
     for nombre, (usa_fuente, usa_especie, limites) in TIPOS_ANALISIS.items():
         tipo = TipoAnalisis(nombre=nombre, ambito="campo", usa_fuente_agua=usa_fuente, usa_especie=usa_especie)
         db.add(tipo)
@@ -196,31 +241,32 @@ def crear_catalogos(db: Session) -> dict:
             db.add(LimiteParametro(tipo_analisis_id=tipo.id, parametro=parametro, unidad_medida=um,
                                    minimo=minimo, maximo=maximo, norma="Valor de demo (por confirmar)"))
 
-    # Fuente compartida por campo y planta Chocalán (pendiente de validar con el encargado de campo)
-    pozo = FuenteAgua(nombre="Pozo 1 Chocalán (ficticio)", ubicacion_id=u["Campo Chocalán"].ubicacion_id,
-                      unidades=[u["Campo Chocalán"], u["Planta Chocalán"]])
-    canal = FuenteAgua(nombre="Canal Itahue (ficticio)", ubicacion_id=u["Campo Itahue"].ubicacion_id,
-                       unidades=[u["Campo Itahue"]])
-    db.add_all([pozo, canal])
-    for nombre in ("Plástico film", "Envases de agroquímicos (triple lavado)", "Cartón", "Bins plásticos"):
-        db.add(MaterialReciclaje(nombre=nombre))
+    db.add_all([FuenteAgua(nombre="Pozo 1 Chocalán (ficticio)", unidad_id=u["Campo Chocalán"].id),
+                FuenteAgua(nombre="Canal Itahue (ficticio)", unidad_id=u["Campo Itahue"].id)])
+    for codigo, nombre, categoria, um, _ in CONCEPTOS_AMBIENTALES:
+        db.add(ConceptoAmbiental(codigo=codigo, nombre=nombre, categoria=categoria, unidad_medida=um, activo=True))
     db.flush()
-    for t in db.scalars(select(Temporada)):
-        for concepto, um, factor in FACTORES_DEMO:
-            db.add(FactorEmision(temporada_id=t.id, concepto=concepto, unidad_medida=um, factor_kgco2e=factor,
-                                 fuente="Valor referencial de demo (fuente oficial por confirmar)"))
+    conceptos = {c.codigo: c for c in db.scalars(select(ConceptoAmbiental))}
+    # El factor es el mismo para LH y VS: uno por nombre de temporada
+    for nombre in sorted({t.temporada for t in db.scalars(select(Temporada).where(Temporada.inicio.is_not(None)))}):
+        for codigo, _, _, _, factor in CONCEPTOS_AMBIENTALES:
+            if factor is not None:
+                db.add(FactorEmision(temporada=nombre, concepto_id=conceptos[codigo].id, factor_kgco2e=factor,
+                                     fuente="Valor referencial de demo (fuente oficial por confirmar)"))
 
+    con_normas = sorted({i for ids in NORMAS_POR_SUCURSAL.values() for i in ids})
     usuarios = {
-        "cert": Usuario(email="certificaciones@demo.local", nombre="Equipo Certificaciones", rol="certificaciones"),
-        "planta": Usuario(email="encargado.planta@demo.local", nombre="Jefe de área · Planta Chocalán", rol="encargado",
-                          unidades=[u["Planta Chocalán"]]),
-        "campo": Usuario(email="encargado.campo@demo.local", nombre="Jefe de campo · Chocalán e Itahue",
-                         rol="encargado", unidades=[u["Campo Chocalán"], u["Campo Itahue"]]),
-        "vs": Usuario(email="encargado.vs@demo.local", nombre="Supervisor · VS Itahue", rol="encargado",
-                      unidades=[u["Campo Itahue"]]),
-        "auditor": Usuario(email="auditor@demo.local", nombre="Auditor externo (solo lectura)", rol="lectura"),
+        "cert": crear_usuario(db, "certificaciones", "Equipo Certificaciones", ["CERTIFICACIONES_ADMIN"], []),
+        "planta": crear_usuario(db, "planta", "Jefe de área · Planta Chocalán", ["REGISTROS_EDITAR", "NC_EDITAR"],
+                                [u["Planta Chocalán"]]),
+        "campo": crear_usuario(db, "campo", "Jefe de campo · Chocalán e Itahue",
+                               ["REGISTROS_EDITAR", "NC_EDITAR", "LABORATORIO_EDITAR", "AMBIENTE_EDITAR"],
+                               [u["Campo Chocalán"], u["Campo Itahue"]]),
+        "vs": crear_usuario(db, "vs", "Supervisor · VS Itahue", ["REGISTROS_EDITAR", "AMBIENTE_EDITAR"],
+                            [u["Campo Itahue"]]),
+        "auditor": crear_usuario(db, "auditor", "Auditor externo (solo lectura)", ["CERTIFICACIONES_VER"],
+                                 [db.get(Unidad, i) for i in con_normas]),
     }
-    db.add_all(usuarios.values())
     db.commit()
     return {"unidades": u, "usuarios": usuarios, "lh": lh, "vs": vs}
 
@@ -296,8 +342,7 @@ def datos_ficticios(db: Session, ctx: dict) -> None:
         ("Manejo de productos fitosanitarios", u["Campo Chocalán"], -200, 165, "Asesor externo (ficticio)"),
         ("Higiene y buenas prácticas de manufactura", pc, -360, 5, "Equipo Certificaciones"),
     ):
-        db.add(Capacitacion(unidad_id=unidad.id, temporada_id=temporada_de(db, HOY + timedelta(days=dias_fecha)).id,
-                            tema=tema, fecha=HOY + timedelta(days=dias_fecha), relator=relator,
+        db.add(Capacitacion(unidad_id=unidad.id, tema=tema, fecha=HOY + timedelta(days=dias_fecha), relator=relator,
                             asistentes=["Trabajador A", "Trabajador B", "Trabajador C"],
                             vigente_hasta=HOY + timedelta(days=dias_vence), creado_por_id=cert.id))
 
@@ -316,7 +361,7 @@ def datos_ficticios(db: Session, ctx: dict) -> None:
         a = Analisis(tipo_analisis_id=t.id, unidad_id=unidad.id, fuente_agua_id=fuente.id if fuente else None,
                      especie_id=especies[especie].id if especie else None,
                      punto=punto, fecha_muestreo=HOY + timedelta(days=dias), laboratorio="Laboratorio (ficticio)",
-                     temporada_id=temporada_de(db, HOY + timedelta(days=dias)).id, archivo_key=clave,
+                     archivo_key=clave,
                      nombre_archivo=nombre, creado_por_id=por.id)
         for lp in limites[t.id]:
             if lp.parametro in fuera:
@@ -341,11 +386,12 @@ def datos_ficticios(db: Session, ctx: dict) -> None:
     analisis("MRL", u["Campo Chocalán"], -200, punto="Lote cerezas")
 
     # Medio ambiente: temporada anterior completa y la actual hasta el mes pasado (datos FICTICIOS).
-    # Estacionalidad agrícola (temporada julio-junio) y una tendencia mixta para que la comparación muestre algo:
+    # Estacionalidad agrícola (temporada mayo-abril) y una tendencia mixta para que la comparación muestre algo:
     # diésel y fertilizante N bajan, electricidad y gas suben, reciclaje sube.
-    materiales = db.scalars(select(MaterialReciclaje)).all()
-    base_consumo = {"combustible_diesel": (1800, "L"), "combustible_gasolina": (350, "L"), "combustible_gas": (120, "kg"),
-                    "electricidad": (26000, "kWh"), "fertilizante_n": (900, "kg"), "fertilizante_no_n": (600, "kg")}
+    conceptos = {c.codigo: c for c in db.scalars(select(ConceptoAmbiental))}
+    materiales = [c for c in conceptos.values() if c.categoria == "reciclaje"]
+    base_consumo = {"combustible_diesel": 1800, "combustible_gasolina": 350, "combustible_gas": 120,
+                    "electricidad": 26000, "fertilizante_n": 900, "fertilizante_no_n": 600}
     # Multiplicador por mes calendario (1 = enero): cosecha nov-mar, frío en verano, calefacción en invierno, abonos sep-dic
     estacional = {
         "combustible_diesel": [1.5, 1.4, 1.2, 0.8, 0.6, 0.5, 0.5, 0.6, 0.9, 1.1, 1.3, 1.5],
@@ -358,8 +404,8 @@ def datos_ficticios(db: Session, ctx: dict) -> None:
     tendencia_actual = {"combustible_diesel": 0.90, "combustible_gasolina": 0.96, "combustible_gas": 1.06,
                         "electricidad": 1.09, "fertilizante_n": 0.85, "fertilizante_no_n": 0.97}
     t_hoy = temporada_de(db, HOY)
-    t_prev = db.scalar(select(Temporada).where(Temporada.inicio < t_hoy.inicio).order_by(Temporada.inicio.desc()))
-    meses_demo: list[tuple[Temporada, date]] = []
+    t_prev = temporada_anterior(db, t_hoy)
+    meses_demo: list[tuple[TemporadaLogica, date]] = []
     for t, hasta in ((t_prev, t_prev.fin), (t_hoy, date(HOY.year, HOY.month, 1) - timedelta(days=1))):
         mes = t.inicio
         while mes <= hasta:
@@ -370,16 +416,16 @@ def datos_ficticios(db: Session, ctx: dict) -> None:
         for t, mes in meses_demo:
             es_actual = t.id == t_hoy.id
             fecha = date(mes.year, mes.month, 15)
-            for concepto, (base, medida) in base_consumo.items():
+            for concepto, base in base_consumo.items():
                 if unidad.tipo == "planta" and concepto.startswith("fertilizante"):
                     continue
                 factor = estacional[concepto][mes.month - 1] * (tendencia_actual[concepto] if es_actual else 1.0)
-                db.add(RegistroConsumo(unidad_id=unidad.id, temporada_id=t.id, fecha=fecha, concepto=concepto,
-                                       cantidad=round(base * escala * factor * random.uniform(0.92, 1.08)),
-                                       unidad_medida=medida, creado_por_id=cert.id))
+                db.add(RegistroAmbiental(unidad_id=unidad.id, concepto_id=conceptos[concepto].id, fecha=fecha,
+                                         cantidad=round(base * escala * factor * random.uniform(0.92, 1.08)),
+                                         creado_por_id=cert.id))
             for material in materiales:
-                db.add(RegistroReciclaje(unidad_id=unidad.id, temporada_id=t.id, material_id=material.id, fecha=fecha,
-                                         kilos=round(random.uniform(60, 220) * escala * (1.18 if es_actual else 1.0)),
+                db.add(RegistroAmbiental(unidad_id=unidad.id, concepto_id=material.id, fecha=fecha,
+                                         cantidad=round(random.uniform(60, 220) * escala * (1.18 if es_actual else 1.0)),
                                          creado_por_id=cert.id))
     db.commit()
 
@@ -390,7 +436,7 @@ def certificados_ficticios(db: Session, ctx: dict, doc, prot: dict) -> None:
     pc = u["Planta Chocalán"]
     doc("Certificados", lh, "planta", "Certificado BRCGS Planta Chocalán", vence=HOY + timedelta(days=48), versiones_previas=1)
     doc("Certificados", lh, "campo", "Certificado GLOBALG.A.P. multisitio LH", vence=HOY + timedelta(days=210))
-    doc("Certificados", lh, "campo", "Certificado PrimusGFS Maitén Gigante", vence=HOY - timedelta(days=12))
+    doc("Certificados", lh, "planta", "Certificado PrimusGFS Packing Maitén Gigante", vence=HOY - timedelta(days=12))
     doc("Certificados", lh, "planta", "Certificado de calibración de balanzas", vence=HOY + timedelta(days=5))
     doc("Certificados", lh, "planta", "Resolución sanitaria Planta Chocalán", vence=HOY + timedelta(days=25))
     doc("Certificados", lh, "campo", "Certificado de análisis de agua de riego", vence=HOY + timedelta(days=55))
@@ -399,16 +445,14 @@ def certificados_ficticios(db: Session, ctx: dict, doc, prot: dict) -> None:
 
     db.add(Certificacion(protocolo_id=prot["BRCGS"].id, empresa_id=lh.id, entidad_certificadora="Certificadora (ficticia)",
                          fecha_auditoria=HOY - timedelta(days=317), resultado="Grado AA", vigente_hasta=HOY + timedelta(days=48),
-                         unidades=[pc]))
+                         unidad_id=pc.id))
     db.add(Certificacion(protocolo_id=prot["GLOBALGAP"].id, empresa_id=lh.id, entidad_certificadora="Certificadora (ficticia)",
-                         fecha_auditoria=HOY - timedelta(days=150), resultado="Aprobado", vigente_hasta=HOY + timedelta(days=210),
-                         unidades=[u["Campo Chocalán"], u["Campo Maitén Gigante"]]))
+                         fecha_auditoria=HOY - timedelta(days=150), resultado="Aprobado", vigente_hasta=HOY + timedelta(days=210)))
     db.add(Certificacion(protocolo_id=prot["PRIMUSGFS"].id, empresa_id=lh.id, entidad_certificadora="Certificadora (ficticia)",
                          fecha_auditoria=HOY - timedelta(days=377), resultado="96 %", vigente_hasta=HOY - timedelta(days=12),
-                         unidades=[u["Campo Maitén Gigante"]]))
+                         unidad_id=u["Packing MG"].id))
     db.add(Certificacion(protocolo_id=prot["GLOBALGAP"].id, empresa_id=vs.id, entidad_certificadora="Certificadora (ficticia)",
-                         fecha_auditoria=HOY - timedelta(days=200), resultado="Aprobado", vigente_hasta=HOY + timedelta(days=120),
-                         unidades=[u["Campo Itahue"]]))
+                         fecha_auditoria=HOY - timedelta(days=200), resultado="Aprobado", vigente_hasta=HOY + timedelta(days=120)))
 
 
 def certificados_reales(db: Session, ctx: dict, categoria: CategoriaDocumento) -> bool:
@@ -420,18 +464,23 @@ def certificados_reales(db: Session, ctx: dict, categoria: CategoriaDocumento) -
     cert = ctx["usuarios"]["cert"]
     empresas = {e.codigo: e for e in db.scalars(select(Empresa))}
     protocolos = {p.codigo: p for p in db.scalars(select(Protocolo))}
-    ubicaciones = list(db.scalars(select(Ubicacion)))
+    sucursales = list(db.scalars(select(Unidad)))
     for ruta in rutas:
         contenido = ruta.read_bytes()
-        r = leer_certificado(contenido, ruta.name, [x.nombre for x in ubicaciones])
+        r = leer_certificado(contenido, ruta.name, lugares_conocidos(sucursales))
         if not (r.protocolo in protocolos and r.empresa in empresas and r.vigente_hasta):
             print(f"  (se omite {ruta.name}: faltan {r.no_encontrados})")
             continue
         empresa, protocolo = empresas[r.empresa], protocolos[r.protocolo]
-        unidades = [next(x for x in ub.unidades if x.tipo == "campo") for ub in ubicaciones
-                    if ub.nombre in r.sitios and ub.empresa_id == empresa.id]
+        unidades = []
+        for sitio in r.sitios:
+            candidatas = [x for x in sucursales if es_del_sitio(x, sitio) and x.empresa_id == empresa.id]
+            elegida = next((x for x in candidatas if protocolo.aplica_a(x)), candidatas[0] if candidatas else None)
+            if elegida:
+                unidades.append(elegida)
         titulo = f"Certificado {protocolo.nombre} {empresa.codigo}" + (f" · {r.operacion}" if r.operacion else "")
-        d = Documento(categoria_id=categoria.id, empresa_id=empresa.id, seccion="campo", titulo=titulo,
+        seccion = protocolo.ambito if protocolo.ambito in ("campo", "planta") else "campo"
+        d = Documento(categoria_id=categoria.id, empresa_id=empresa.id, seccion=seccion, titulo=titulo,
                       creado_por_id=cert.id)
         db.add(d)
         db.flush()
@@ -447,12 +496,12 @@ def certificados_reales(db: Session, ctx: dict, categoria: CategoriaDocumento) -
         db.flush()
         desde = date.fromisoformat(r.vigente_desde) if r.vigente_desde else None
         db.add(Certificacion(
-            protocolo_id=protocolo.id, empresa_id=empresa.id, documento_id=d.id, documento_version_id=v.id,
+            protocolo_id=protocolo.id, empresa_id=empresa.id, documento_version_id=v.id,
             numero=r.numero, norma_version=r.norma_version, entidad_certificadora=r.entidad, vigente_desde=desde,
-            vigente_hasta=v.fecha_vencimiento, resultado=r.puntaje, productos=r.productos, unidades=unidades,
-            fecha_auditoria=date.fromisoformat(r.fecha_auditoria) if r.fecha_auditoria else None,
-            temporada_id=temporada_de(db, desde or v.fecha_vencimiento).id))
-        print(f"  {titulo}: N° {r.numero}, vence {r.vigente_hasta}, {len(unidades)} sucursales")
+            vigente_hasta=v.fecha_vencimiento, resultado=r.puntaje, productos=r.productos,
+            unidad_id=unidades[0].id if len(unidades) == 1 else None,
+            fecha_auditoria=date.fromisoformat(r.fecha_auditoria) if r.fecha_auditoria else None))
+        print(f"  {titulo}: N° {r.numero}, vence {r.vigente_hasta}, sucursales {[x.nombre for x in unidades]}")
     return True
 
 
@@ -513,7 +562,7 @@ def demo_auditorias(db: Session, ctx: dict) -> None:
 
     # Programa anual: una auditoría BRCGS planificada con todas sus cláusulas
     inicio = HOY + timedelta(days=20)
-    db.add(Auditoria(version_id=brc.id, unidad_id=pc.id, temporada_id=temporada_de(db, inicio).id, fecha=inicio,
+    db.add(Auditoria(version_id=brc.id, unidad_id=pc.id, fecha=inicio,
                      fecha_fin=inicio + timedelta(days=4), titulo=f"Auditoría interna BRCGS {t_actual.nombre} · Planta Chocalán",
                      auditor="Equipo Certificaciones", secciones=[], estado="planificada", origen="app"))
 
@@ -521,7 +570,7 @@ def demo_auditorias(db: Session, ctx: dict) -> None:
     gg = db.scalar(select(VersionNorma).join(Protocolo).where(Protocolo.codigo == "GLOBALGAP"))
     if gg:
         # Todas las cláusulas; se trabaja una por día (ya van FV 01, 02, 03 y 20)
-        aud = Auditoria(version_id=gg.id, unidad_id=u["Campo Itahue"].id, temporada_id=t_actual.id,
+        aud = Auditoria(version_id=gg.id, unidad_id=u["Campo Itahue"].id,
                         fecha=HOY - timedelta(days=3), fecha_fin=HOY + timedelta(days=4),
                         titulo=f"Auditoría interna GLOBALG.A.P. {t_actual.nombre} · Campo Itahue",
                         auditor="Equipo Certificaciones", secciones=[], estado="en_curso", origen="app")
@@ -536,7 +585,7 @@ def demo_auditorias(db: Session, ctx: dict) -> None:
             db.flush()
             sincronizar_nc(db, aud, resp)
         inicio = HOY + timedelta(days=45)
-        db.add(Auditoria(version_id=gg.id, unidad_id=u["Campo Chocalán"].id, temporada_id=temporada_de(db, inicio).id,
+        db.add(Auditoria(version_id=gg.id, unidad_id=u["Campo Chocalán"].id,
                          fecha=inicio, fecha_fin=inicio + timedelta(days=5),
                          titulo=f"Auditoría interna GLOBALG.A.P. {t_actual.nombre} · Campo Chocalán",
                          auditor="Equipo Certificaciones", secciones=[], estado="planificada", origen="app"))
@@ -608,7 +657,6 @@ def datos_registros(db: Session, ctx: dict) -> None:
 
     u, us = ctx["unidades"], ctx["usuarios"]
     cert = us["cert"]
-    t_actual = temporada_de(db, HOY)
     carpeta = Config.REFERENCIAS_DIR / "registros"
     archivos = sorted(carpeta.rglob("*.docx")) if carpeta.is_dir() else []
     for ruta in archivos:
@@ -664,7 +712,7 @@ def datos_registros(db: Session, ctx: dict) -> None:
                     fila["_por"] = responsable.nombre if k % 3 else "Trabajador de apoyo (ficticio)"
                     fila["_en"] = (momento - timedelta(days=12 - k * 3)).isoformat(timespec="minutes")
         r = Registro(
-            plantilla_id=pl.id, unidad_id=unidad.id, temporada_id=t_actual.id,
+            plantilla_id=pl.id, unidad_id=unidad.id,
             titulo=f"{pl.codigo} {pl.nombre} · {periodo}", codigo=pl.codigo, version=pl.version,
             formato=pl.formato, word_clave=pl.word_clave, campos=pl.campos, valores=valores,
             responsable_id=responsable.id, estado=estado, observacion=observacion, creado_por_id=cert.id,
@@ -708,7 +756,10 @@ def datos_registros(db: Session, ctx: dict) -> None:
 
 def main() -> None:
     print(f"Base demo: {Config.url_base_datos()}")
-    Base.metadata.drop_all(engine)
+    # Se parte de un archivo nuevo: drop_all falla si la base trae un esquema anterior
+    engine.dispose()
+    Path(engine.url.database).unlink(missing_ok=True)
+    # En la demo se crean también las tablas compartidas (en GCP ya existen)
     Base.metadata.create_all(engine)
     if almacenamiento.DIR_LOCAL.exists():
         shutil.rmtree(almacenamiento.DIR_LOCAL)

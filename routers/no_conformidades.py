@@ -6,9 +6,9 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
 from utils import almacenamiento
-from utils.auth import es_certificaciones, puede_escribir, solo_certificaciones, usuario_actual, verificar_unidad
+from utils.auth import NC, es_certificaciones, requiere_permiso, solo_certificaciones, usuario_actual, verificar_unidad
 from utils.bitacora import registrar
-from utils.comunes import filtrar_unidades, obtener, unidad_dict
+from utils.comunes import filtrar_temporada, filtrar_unidades, obtener, unidad_dict
 from utils.db import get_db
 from utils.modelos import AccionCorrectiva, Auditoria, NoConformidad, Usuario, VersionNorma
 from utils.hora import ahora
@@ -32,7 +32,7 @@ class NcCambios(BaseModel):
     descripcion: str | None = None
     tipo: str | None = None
     clasificacion: str | None = None
-    responsable_id: int | None = None
+    responsable_id: str | None = None
     plazo: date | None = None
     area_id: int | None = None
     estado: str | None = None
@@ -56,7 +56,7 @@ def _cadena(nc: NoConformidad) -> list[dict]:
 
 
 def _titulo(a: Auditoria) -> str:
-    return a.titulo or f"Auditoría interna {a.version.protocolo.nombre} · {a.unidad.nombre} · {a.fecha:%m-%Y}"
+    return a.titulo or f"Auditoría interna {a.version.protocolo.nombre} · {a.unidad.etiqueta} · {a.fecha:%m-%Y}"
 
 
 def _nc_dict(nc: NoConformidad, detalle: bool = False) -> dict:
@@ -104,7 +104,7 @@ def _nc_dict(nc: NoConformidad, detalle: bool = False) -> dict:
 def listar(empresa_id: int | None = None, unidad_id: int | None = None, temporada_id: int | None = None,
            protocolo_id: int | None = None, estado: str | None = None, solo_reincidentes: bool = False,
            solo_repetidas: bool = False,
-           responsable_id: int | None = None, usuario: Usuario = Depends(usuario_actual),
+           responsable_id: str | None = None, usuario: Usuario = Depends(usuario_actual),
            db: Session = Depends(get_db)) -> list[dict]:
     consulta = filtrar_unidades(
         select(NoConformidad).join(Auditoria).options(selectinload(NoConformidad.acciones)),
@@ -112,8 +112,7 @@ def listar(empresa_id: int | None = None, unidad_id: int | None = None, temporad
     if not es_certificaciones(usuario):
         # El jefe de campo o área ve las no conformidades cuando se emite el informe de la auditoría
         consulta = consulta.where(Auditoria.emitida_en.is_not(None))
-    if temporada_id:
-        consulta = consulta.where(Auditoria.temporada_id == temporada_id)
+    consulta = filtrar_temporada(db, consulta, temporada_id, NoConformidad.fecha_deteccion, NoConformidad.unidad_id)
     if protocolo_id:
         consulta = consulta.where(Auditoria.version_id.in_(
             select(VersionNorma.id).where(VersionNorma.protocolo_id == protocolo_id)))
@@ -140,7 +139,7 @@ def detalle(nc_id: int, usuario: Usuario = Depends(usuario_actual), db: Session 
 
 
 @router.put("/{nc_id}/plan")
-def guardar_plan(nc_id: int, datos: PlanAccion, usuario: Usuario = Depends(puede_escribir),
+def guardar_plan(nc_id: int, datos: PlanAccion, usuario: Usuario = Depends(requiere_permiso(NC)),
                  db: Session = Depends(get_db)) -> dict:
     """El jefe de área registra el análisis de causa raíz y las acciones. Puede guardar y seguir después;
     al enviar quedan para revisión de certificaciones."""
@@ -201,7 +200,7 @@ def modificar(nc_id: int, datos: NcCambios, usuario: Usuario = Depends(solo_cert
 
 
 @router.post("/{nc_id}/acciones", status_code=201)
-def agregar_accion(nc_id: int, datos: AccionEntrada, usuario: Usuario = Depends(puede_escribir),
+def agregar_accion(nc_id: int, datos: AccionEntrada, usuario: Usuario = Depends(requiere_permiso(NC)),
                    db: Session = Depends(get_db)) -> dict:
     nc = obtener(db, NoConformidad, nc_id)
     verificar_unidad(usuario, nc.unidad_id)

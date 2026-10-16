@@ -5,7 +5,7 @@ from datetime import date
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from openpyxl import Workbook
-from sqlalchemy import or_, select
+from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
 from config import Config
@@ -17,12 +17,11 @@ from utils.auth import (
     puede_escribir, solo_certificaciones, unidades_permitidas, usuario_actual, verificar_unidad,
 )
 from utils.bitacora import registrar
-from utils.comunes import dias_para, filtrar_unidades, obtener, temporada_para_fecha, unidad_dict
+from utils.comunes import dias_para, filtrar_temporada, filtrar_unidades, obtener, unidad_dict
 from utils.db import get_db
 from utils.analizar_documento import analizar
 from utils.modelos import (
-    Capacitacion, CategoriaDocumento, Certificacion, Documento, DocumentoVersion, Empresa, Protocolo, Requisito,
-    Ubicacion, Unidad, Usuario, documento_protocolos,
+    Capacitacion, CategoriaDocumento, Certificacion, Documento, DocumentoVersion, Empresa, Protocolo, Unidad, Usuario,
 )
 from utils.hora import ahora
 
@@ -67,25 +66,24 @@ def _doc_dict(doc: Documento, detalle: bool = False) -> dict:
     vigente = version_vigente(doc)
     ultima = doc.versiones[-1] if doc.versiones else None
     datos = {
-        "id": doc.id, "titulo": doc.titulo, "codigo": doc.codigo, "responsable": doc.responsable,
+        "id": doc.id, "titulo": doc.titulo, "codigo": doc.codigo,
         "categoria": {"id": doc.categoria.id, "nombre": doc.categoria.nombre},
-        "empresa_id": doc.empresa_id, "seccion": doc.seccion, "temporada_id": doc.temporada_id,
+        "empresa_id": doc.empresa_id, "seccion": doc.seccion,
         "vigente": _version_dict(vigente) if vigente else None,
         "ultima": _version_dict(ultima) if ultima else None,
         "versiones_total": len(doc.versiones),
     }
     if detalle:
         datos["versiones"] = [_version_dict(v) for v in reversed(doc.versiones)]
-        datos["requisitos"] = [{"id": r.id, "codigo": r.codigo, "protocolo": r.version.protocolo.codigo}
-                               for r in doc.requisitos]
     return datos
 
 
-def _consulta_documentos(db: Session, usuario: Usuario, empresa_id, unidad_id, temporada_id, protocolo_id,
-                         categoria_id, seccion=None):
+def _consulta_documentos(db: Session, usuario: Usuario, empresa_id, unidad_id, protocolo_id, categoria_id,
+                         seccion=None):
+    """Los documentos fijos no van por temporada: siempre se muestra la versión vigente."""
     consulta = select(Documento).options(
         selectinload(Documento.versiones).selectinload(DocumentoVersion.subido_por), selectinload(Documento.categoria),
-        selectinload(Documento.versiones).selectinload(DocumentoVersion.certificacion).selectinload(Certificacion.unidades),
+        selectinload(Documento.versiones).selectinload(DocumentoVersion.certificacion).selectinload(Certificacion.unidad),
     )
     if unidades_permitidas(usuario) is not None:
         # Encargados: los documentos fijos de las empresas de sus sucursales (solo lectura)
@@ -99,11 +97,11 @@ def _consulta_documentos(db: Session, usuario: Usuario, empresa_id, unidad_id, t
                                   Documento.seccion.in_((unidad.tipo, "empresarial")))
     if seccion:
         consulta = consulta.where(Documento.seccion == seccion)
-    if temporada_id:
-        consulta = consulta.where(or_(Documento.temporada_id == temporada_id, Documento.temporada_id.is_(None)))
     if protocolo_id:
-        consulta = consulta.where(Documento.id.in_(
-            select(documento_protocolos.c.documento_id).where(documento_protocolos.c.protocolo_id == protocolo_id)))
+        # Solo los certificados tienen norma (por su ficha)
+        consulta = consulta.where(Documento.id.in_(select(DocumentoVersion.documento_id).join(
+            Certificacion, Certificacion.documento_version_id == DocumentoVersion.id).where(
+            Certificacion.protocolo_id == protocolo_id)))
     if categoria_id:
         consulta = consulta.where(Documento.categoria_id == categoria_id)
     return consulta.order_by(Documento.titulo)
@@ -114,8 +112,7 @@ def listar(empresa_id: int | None = None, unidad_id: int | None = None, temporad
            protocolo_id: int | None = None, categoria_id: int | None = None, seccion: str | None = None,
            q: str | None = None, usuario: Usuario = Depends(usuario_actual), db: Session = Depends(get_db)) -> list[dict]:
     # Los documentos fijos no tienen protocolo: el filtro de protocolo no aplica
-    docs = db.scalars(_consulta_documentos(db, usuario, empresa_id, unidad_id, temporada_id, None,
-                                           categoria_id, seccion)).all()
+    docs = db.scalars(_consulta_documentos(db, usuario, empresa_id, unidad_id, None, categoria_id, seccion)).all()
     resultado = [_doc_dict(d) for d in docs]
     if q:
         ql = q.lower()
@@ -126,7 +123,7 @@ def listar(empresa_id: int | None = None, unidad_id: int | None = None, temporad
 @router.get("/documentos/codigos")
 def codigos(usuario: Usuario = Depends(usuario_actual), db: Session = Depends(get_db)) -> dict[str, int]:
     """Mapa código → id, para convertir en enlaces los códigos citados en observaciones (P OC CE 29, DPL 23)."""
-    docs = db.scalars(_consulta_documentos(db, usuario, None, None, None, None, None).where(Documento.codigo.is_not(None)))
+    docs = db.scalars(_consulta_documentos(db, usuario, None, None, None, None).where(Documento.codigo.is_not(None)))
     return {d.codigo: d.id for d in docs}
 
 
@@ -134,7 +131,7 @@ def codigos(usuario: Usuario = Depends(usuario_actual), db: Session = Depends(ge
 def exportar(empresa_id: int | None = None, unidad_id: int | None = None, temporada_id: int | None = None,
              protocolo_id: int | None = None, usuario: Usuario = Depends(usuario_actual),
              db: Session = Depends(get_db)) -> StreamingResponse:
-    docs = db.scalars(_consulta_documentos(db, usuario, empresa_id, unidad_id, temporada_id, None, None)).all()
+    docs = db.scalars(_consulta_documentos(db, usuario, empresa_id, unidad_id, None, None)).all()
     libro = Workbook()
     hoja = libro.active
     hoja.title = "Documentos fijos"
@@ -195,20 +192,43 @@ def _nueva_version(db: Session, doc: Documento, datos: VersionEntrada, usuario: 
     db.add(version)
     db.flush()
     if c := datos.certificado:
-        unidades = list(db.scalars(select(Unidad).join(Ubicacion).where(
-            Unidad.id.in_(c.unidad_ids), Ubicacion.empresa_id == doc.empresa_id)))
+        unidades = list(db.scalars(select(Unidad).where(
+            Unidad.id.in_(c.unidad_ids), Unidad.empresa_id == doc.empresa_id)))
         if len(unidades) != len(set(c.unidad_ids)):
             raise HTTPException(400, "Las sucursales cubiertas deben ser de la empresa del certificado")
-        temporada = temporada_para_fecha(db, c.vigente_desde or datos.fecha_vencimiento)
+        # Una sucursal (PrimusGFS: el packing) o, si son varias o ninguna, toda la empresa (multisitio)
         db.add(Certificacion(
-            protocolo_id=obtener(db, Protocolo, c.protocolo_id).id, empresa_id=doc.empresa_id, documento_id=doc.id,
+            protocolo_id=obtener(db, Protocolo, c.protocolo_id).id, empresa_id=doc.empresa_id,
             documento_version_id=version.id, numero=c.numero, norma_version=c.norma_version,
             entidad_certificadora=c.entidad_certificadora, vigente_desde=c.vigente_desde,
             vigente_hasta=datos.fecha_vencimiento, fecha_auditoria=c.fecha_auditoria, resultado=c.resultado,
-            productos=c.productos, unidades=unidades, temporada_id=temporada.id if temporada else None,
+            productos=c.productos, unidad_id=unidades[0].id if len(unidades) == 1 else None,
         ))
         db.flush()
     return version
+
+
+# Packing nombrado por su comuna: PACKING PAINE es el packing de Santa Victoria
+ALIAS_LUGAR = {"PAINE": "Santa Victoria"}
+
+
+def lugar_sucursal(u: Unidad) -> str:
+    """Nombre del lugar sin el tipo, para buscarlo en los certificados: 'CAMPO CHOCALAN' -> 'Chocalan'."""
+    nombre = re.sub(r"^(CAMPO|PACKING|PLANTA|FUNDO)\s+", "", u.nombre.strip(), flags=re.IGNORECASE)
+    return ALIAS_LUGAR.get(nombre.upper(), nombre.title())
+
+
+def lugares_conocidos(sucursales: list[Unidad]) -> list[str]:
+    """Nombres de lugar que se buscan en el texto (las siglas, como MG, no)."""
+    return sorted({lugar_sucursal(u) for u in sucursales if len(lugar_sucursal(u)) > 3})
+
+
+def es_del_sitio(u: Unidad, sitio: str) -> bool:
+    """La sucursal está en el sitio nombrado. Siglas por iniciales: PACKING MG = Maitén Gigante."""
+    lugar = lugar_sucursal(u)
+    if len(lugar) <= 3:
+        return lugar.upper() == "".join(p[0] for p in sitio.split()).upper()
+    return lugar == sitio
 
 
 DESCRIPCION_CATEGORIA = {"Procedimientos": "un procedimiento", "Análisis de riesgos": "un análisis de riesgos",
@@ -224,7 +244,7 @@ def _parecido(db: Session, a, empresa: Empresa | None, protocolo: Protocolo | No
     """Documento ya cargado al que se parece el archivo: mismo certificado (norma, empresa y sucursales)
     o mismo código. Sirve para proponer subirlo como versión nueva en vez de duplicarlo."""
     docs = db.scalars(select(Documento).options(
-        selectinload(Documento.versiones).selectinload(DocumentoVersion.certificacion).selectinload(Certificacion.unidades),
+        selectinload(Documento.versiones).selectinload(DocumentoVersion.certificacion).selectinload(Certificacion.unidad),
         selectinload(Documento.categoria))).all()
     for d in docs:
         if empresa and d.empresa_id != empresa.id:
@@ -258,8 +278,8 @@ def analizar_subido(datos: ArchivoSubidoEntrada, _: Usuario = Depends(solo_certi
         contenido = almacenamiento.leer(datos.archivo_key)
     except Exception as exc:
         raise HTTPException(400, "No se pudo leer el archivo") from exc
-    ubicaciones = list(db.scalars(select(Ubicacion)))
-    a = analizar(contenido, datos.nombre_archivo, sorted({u.nombre for u in ubicaciones}))
+    sucursales = list(db.scalars(select(Unidad)))
+    a = analizar(contenido, datos.nombre_archivo, lugares_conocidos(sucursales))
     empresa = db.scalar(select(Empresa).where(Empresa.codigo == a.empresa)) if a.empresa else None
     categorias = {c.nombre: c for c in db.scalars(select(CategoriaDocumento))}
     r = a.certificado
@@ -267,12 +287,13 @@ def analizar_subido(datos: ArchivoSubidoEntrada, _: Usuario = Depends(solo_certi
 
     propuesta, descripcion, unidad_ids = None, None, []
     if r and protocolo:
-        # Sitio → sucursal: la de campo de esa ubicación (o la única que tenga), en la empresa del certificado
-        for u in ubicaciones:
-            if u.nombre in r.sitios and (empresa is None or u.empresa_id == empresa.id):
-                elegida = next((x for x in u.unidades if x.tipo == "campo"), u.unidades[0] if u.unidades else None)
-                if elegida:
-                    unidad_ids.append(elegida.id)
+        # Sitio → sucursal de la empresa del certificado; si hay varias con ese nombre, la que tiene la norma
+        for sitio in r.sitios:
+            candidatas = [u for u in sucursales if es_del_sitio(u, sitio)
+                          and (empresa is None or u.empresa_id == empresa.id)]
+            elegida = next((u for u in candidatas if protocolo.aplica_a(u)), candidatas[0] if candidatas else None)
+            if elegida:
+                unidad_ids.append(elegida.id)
         categoria = next((c for c in categorias.values() if c.requiere_vencimiento), None)
         titulo = f"Certificado {protocolo.nombre}" + (f" {empresa.codigo}" if empresa else "")
         titulo += f" · {r.operacion}" if r.operacion else ""
@@ -313,13 +334,10 @@ def crear(datos: DocumentoEntrada, usuario: Usuario = Depends(solo_certificacion
     if categoria.requiere_codigo and not datos.codigo:
         raise HTTPException(400, f"La categoría '{categoria.nombre}' exige código")
     _validar_version(categoria, datos.version)
+    obtener(db, Empresa, datos.empresa_id)
     doc = Documento(
-        categoria_id=categoria.id, empresa_id=datos.empresa_id, seccion=datos.seccion,
-        temporada_id=datos.temporada_id, titulo=datos.titulo.strip(),
-        codigo=datos.codigo.strip().upper() if datos.codigo else None,
-        responsable=datos.responsable, creado_por_id=usuario.id,
-        protocolos=list(db.scalars(select(Protocolo).where(Protocolo.id.in_(datos.protocolo_ids)))),
-        requisitos=list(db.scalars(select(Requisito).where(Requisito.id.in_(datos.requisito_ids)))),
+        categoria_id=categoria.id, empresa_id=datos.empresa_id, seccion=datos.seccion, titulo=datos.titulo.strip(),
+        codigo=datos.codigo.strip().upper() if datos.codigo else None, creado_por_id=usuario.id,
     )
     db.add(doc)
     db.flush()
@@ -348,13 +366,9 @@ def modificar(documento_id: int, datos: DocumentoCambios, usuario: Usuario = Dep
               db: Session = Depends(get_db)) -> dict:
     doc = obtener(db, Documento, documento_id)
     cambios = datos.model_dump(exclude_unset=True)
-    for campo in ("titulo", "codigo", "responsable"):
+    for campo in ("titulo", "codigo"):
         if campo in cambios:
             setattr(doc, campo, cambios[campo])
-    if datos.protocolo_ids is not None:
-        doc.protocolos = list(db.scalars(select(Protocolo).where(Protocolo.id.in_(datos.protocolo_ids))))
-    if datos.requisito_ids is not None:
-        doc.requisitos = list(db.scalars(select(Requisito).where(Requisito.id.in_(datos.requisito_ids))))
     registrar(db, usuario, "modificar", "documento", doc.id, cambios)
     db.commit()
     db.refresh(doc)
@@ -377,8 +391,7 @@ def listar_capacitaciones(empresa_id: int | None = None, unidad_id: int | None =
                           temporada_id: int | None = None, usuario: Usuario = Depends(usuario_actual),
                           db: Session = Depends(get_db)) -> list[dict]:
     consulta = filtrar_unidades(select(Capacitacion), Capacitacion.unidad_id, usuario, empresa_id, unidad_id)
-    if temporada_id:
-        consulta = consulta.where(Capacitacion.temporada_id == temporada_id)
+    consulta = filtrar_temporada(db, consulta, temporada_id, Capacitacion.fecha, Capacitacion.unidad_id)
     return [
         {"id": c.id, "tema": c.tema, "fecha": c.fecha, "relator": c.relator, "asistentes": c.asistentes or [],
          "vigente_hasta": c.vigente_hasta, "dias_para_vencer": dias_para(c.vigente_hasta),
@@ -391,8 +404,7 @@ def listar_capacitaciones(empresa_id: int | None = None, unidad_id: int | None =
 def crear_capacitacion(datos: CapacitacionEntrada, usuario: Usuario = Depends(puede_escribir),
                        db: Session = Depends(get_db)) -> dict:
     verificar_unidad(usuario, datos.unidad_id)
-    temporada = temporada_para_fecha(db, datos.fecha)
-    cap = Capacitacion(**datos.model_dump(), temporada_id=temporada.id if temporada else None, creado_por_id=usuario.id)
+    cap = Capacitacion(**datos.model_dump(), creado_por_id=usuario.id)
     db.add(cap)
     db.flush()
     registrar(db, usuario, "crear", "capacitacion", cap.id, {"tema": cap.tema})
@@ -409,7 +421,7 @@ def calcular_vencimientos(db: Session, usuario: Usuario | None, empresa_id: int 
     consulta = select(Documento).options(
         selectinload(Documento.versiones).selectinload(DocumentoVersion.certificacion), selectinload(Documento.categoria))
     if usuario is not None:
-        consulta = _consulta_documentos(db, usuario, empresa_id, unidad_id, None, protocolo_id, None)
+        consulta = _consulta_documentos(db, usuario, empresa_id, unidad_id, protocolo_id, None)
     consulta = consulta.where(Documento.categoria_id.in_(
         select(CategoriaDocumento.id).where(CategoriaDocumento.requiere_vencimiento.is_(True))))
     empresas = {e.id: e.codigo for e in db.scalars(select(Empresa))}
@@ -427,7 +439,7 @@ def calcular_vencimientos(db: Session, usuario: Usuario | None, empresa_id: int 
         items.append({
             "tipo": "certificado", "id": doc.id, "titulo": doc.titulo, "codigo": doc.codigo,
             "detalle": doc.categoria.nombre, "seccion": doc.seccion, "unidad": SECCIONES.get(doc.seccion, doc.seccion),
-            "empresa_id": doc.empresa_id, "empresa": empresas.get(doc.empresa_id), "responsable": doc.responsable,
+            "empresa_id": doc.empresa_id, "empresa": empresas.get(doc.empresa_id),
             "version": vigente.version_texto or str(vigente.numero), "emision": vigente.fecha_emision,
             "vence": vigente.fecha_vencimiento, "dias": dias, "certificado": _cert_dict(vigente.certificacion),
             "grupo": "vencido" if dias < 0 else next((f"{d}" for d in sorted(Config.DIAS_ALERTA) if dias <= d), "vigente"),

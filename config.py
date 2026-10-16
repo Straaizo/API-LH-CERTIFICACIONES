@@ -21,7 +21,7 @@ class Config:
     ORIGENES_PERMITIDOS = _lista(os.getenv("ORIGENES_PERMITIDOS", "http://localhost:5173"))
 
     # ── Conexión a base de datos ──────────────────────────────────────────────
-    # sqlite = demo local en privado/demo.db | mysql | postgresql (motor por confirmar)
+    # sqlite = demo local en privado/demo.db | mysql (Cloud SQL)
     DB_MOTOR = os.getenv("DB_MOTOR", "sqlite")
     # DATABASE_URL (formato SQLAlchemy) se usa en Cloud Run. Si no está, se arma con DB_*.
     DATABASE_URL = os.getenv("DATABASE_URL", "")
@@ -37,8 +37,14 @@ class Config:
     DB_NAME = os.getenv("DB_NAME", "certificaciones")
 
     # ── Autenticación ─────────────────────────────────────────────────────────
-    # demo: usuario elegido en pantalla (solo desarrollo) | firebase: token de Firebase Authentication
+    # demo: usuario elegido en pantalla (solo desarrollo) | jwt: usuario o correo + clave (igual que LH Inventario)
     AUTH_MODO = os.getenv("AUTH_MODO", "demo")
+    # Id de Certificaciones en general_dim_app (lo crea el equipo del portal web; propuesta: 16)
+    APP_ID = int(os.getenv("APP_ID", 16))
+    # Firma de los tokens: Secret Manager en Cloud Run, .env en local. Obligatoria con AUTH_MODO=jwt
+    JWT_SECRET_KEY = os.getenv("JWT_SECRET_KEY", "").strip()
+    JWT_HORAS_ACCESO = int(os.getenv("JWT_HORAS_ACCESO", 10))
+    JWT_DIAS_REFRESCO = int(os.getenv("JWT_DIAS_REFRESCO", 7))
     # Demo publicada (Cloud Run): sin esta clave no se entra. Vacía = demo local sin clave.
     DEMO_CLAVE = os.getenv("DEMO_CLAVE", "").strip()
     # Demo publicada: carpeta (bucket montado) con la base y los archivos de partida
@@ -74,3 +80,6 @@ if Config.ENTORNO == "produccion" and (
     Config.AUTH_MODO == "demo" or Config.DB_MOTOR == "sqlite" or Config.ALMACENAMIENTO == "local"
 ):
     raise RuntimeError("En produccion no se permite AUTH_MODO=demo, DB_MOTOR=sqlite ni ALMACENAMIENTO=local")
+
+if Config.AUTH_MODO == "jwt" and len(Config.JWT_SECRET_KEY) < 32:
+    raise RuntimeError("AUTH_MODO=jwt requiere JWT_SECRET_KEY de al menos 32 caracteres")

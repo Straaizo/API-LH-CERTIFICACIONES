@@ -69,7 +69,7 @@ def _meta(registro: Registro, f: dict) -> list[tuple[str, str]]:
     simples = [c for c in registro.campos if _es_simple(c)]
     tiene_responsable = any(c["etiqueta"].strip().lower().rstrip(":.") == "responsable" for c in simples)
     filas = [("Encargado", f.get("encargado", "")), ("Frecuencia", f.get("frecuencia", "")),
-             ("Registro", registro.titulo), ("Unidad", registro.unidad.nombre)]
+             ("Registro", registro.titulo), ("Sucursal", registro.unidad.etiqueta)]
     if not tiene_responsable and registro.responsable:
         filas.append(("Responsable", registro.responsable.nombre))
     filas += [(c["etiqueta"], _texto(registro.valores.get(c["id"]), c["tipo"])) for c in simples]

@@ -7,8 +7,10 @@ from utils.auth import unidades_permitidas, usuario_actual, verificar_clave_demo
 from utils.comunes import obtener, temporada_actual, unidad_dict
 from utils.db import get_db
 from utils.modelos import (
-    Area, CategoriaDocumento, Empresa, Especie, FuenteAgua, LimiteParametro, MaterialReciclaje, Protocolo, Temporada, TipoAnalisis, Ubicacion, Unidad, Usuario, VersionNorma,
+    Area, CategoriaDocumento, ConceptoAmbiental, Empresa, Especie, FuenteAgua, LimiteParametro, Protocolo, TipoAnalisis,
+    Unidad, Usuario, VersionNorma, sucursal_protocolos, usuario_apps,
 )
+from utils.temporadas import listar_temporadas
 
 router = APIRouter()
 
@@ -18,13 +20,20 @@ def usuarios_demo(db: Session = Depends(get_db)) -> list[dict]:
     """Solo en modo demo: lista de usuarios para elegir en la pantalla de ingreso."""
     if Config.AUTH_MODO != "demo":
         return []
-    usuarios = db.scalars(select(Usuario).options(selectinload(Usuario.unidades)).where(Usuario.activo)).all()
-    return [_usuario_dict(u) for u in usuarios]
+    return [_usuario_dict(u) for u in _usuarios_app(db)]
+
+
+def _usuarios_app(db: Session) -> list[Usuario]:
+    """Usuarios activos con acceso a Certificaciones."""
+    return list(db.scalars(
+        select(Usuario).where(Usuario.id_estado == 1, Usuario.id.in_(
+            select(usuario_apps.c.id_usuario).where(usuario_apps.c.id_app == Config.APP_ID)))
+        .options(selectinload(Usuario.unidades), selectinload(Usuario.permisos)).order_by(Usuario.nombre)))
 
 
 def _usuario_dict(u: Usuario) -> dict:
-    return {"id": u.id, "nombre": u.nombre, "email": u.email, "rol": u.rol,
-            "unidades": [unidad_dict(x) for x in u.unidades]}
+    return {"id": u.id, "nombre": u.nombre or u.usuario, "usuario": u.usuario, "email": u.email, "rol": u.rol,
+            "permisos": sorted(u.codigos_permiso), "unidades": [unidad_dict(x) for x in u.unidades]}
 
 
 @router.get("/yo")
@@ -35,23 +44,25 @@ def yo(usuario: Usuario = Depends(usuario_actual)) -> dict:
 @router.get("/catalogos")
 def catalogos(usuario: Usuario = Depends(usuario_actual), db: Session = Depends(get_db)) -> dict:
     permitidas = unidades_permitidas(usuario)
-    unidades = db.scalars(select(Unidad).join(Ubicacion).order_by(Ubicacion.empresa_id, Ubicacion.nombre, Unidad.tipo)).all()
+    # Sucursales que tienen alguna norma (las demás no participan en certificaciones)
+    unidades = [u for u in db.scalars(select(Unidad).where(Unidad.id.in_(
+        select(sucursal_protocolos.c.sucursal_id))).order_by(Unidad.empresa_id, Unidad.id))]
     if permitidas is not None:
         unidades = [u for u in unidades if u.id in permitidas]
     ids = {u.id for u in unidades}
     actual = temporada_actual(db)
     return {
         "empresas": [{"id": e.id, "codigo": e.codigo, "nombre": e.nombre}
-                     for e in db.scalars(select(Empresa).order_by(Empresa.codigo.desc()))],
-        "unidades": [unidad_dict(u) | {"ubicacion": u.ubicacion.nombre} for u in unidades],
+                     for e in db.scalars(select(Empresa).order_by(Empresa.id))],
+        "unidades": [unidad_dict(u) for u in unidades],
         "areas": [{"id": a.id, "nombre": a.nombre, "unidad_id": a.unidad_id}
                   for a in db.scalars(select(Area).order_by(Area.id)) if a.unidad_id in ids],
-        "temporadas": [{"id": t.id, "nombre": t.nombre, "inicio": t.inicio, "fin": t.fin, "actual": t == actual}
-                       for t in db.scalars(select(Temporada).order_by(Temporada.inicio.desc()))],
+        "temporadas": [{"id": t.id, "nombre": t.nombre, "inicio": t.inicio, "fin": t.fin,
+                        "actual": actual is not None and t.id == actual.id} for t in listar_temporadas(db)],
         "protocolos": [
             {"id": p.id, "codigo": p.codigo, "nombre": p.nombre, "ambito": p.ambito,
              "unidades_aplica": [u.id for u in unidades if p.aplica_a(u)],
-             "solo_unidades": [u.id for u in p.unidades],
+             "solo_unidades": [u.id for u in p.unidades if u.id in ids],
              "versiones": [{"id": v.id, "nombre": v.nombre, "vigente": v.vigente, "requisitos": len(v.requisitos),
                             "cargada_en": v.cargada_en, "archivo": v.archivo}
                            for v in sorted(p.versiones, key=lambda v: (not v.vigente, -(v.id or 0)))]}
@@ -70,11 +81,12 @@ def catalogos(usuario: Usuario = Depends(usuario_actual), db: Session = Depends(
                     for lp in db.scalars(select(LimiteParametro))],
         "fuentes_agua": [{"id": f.id, "nombre": f.nombre, "unidades": [u.id for u in f.unidades]}
                          for f in db.scalars(select(FuenteAgua)) if any(u.id in ids for u in f.unidades)],
-        "especies": [{"id": e.id, "nombre": e.nombre, "unidades": [u.id for u in e.unidades if u.id in ids]}
-                     for e in db.scalars(select(Especie).order_by(Especie.nombre))],
-        "materiales_reciclaje": [{"id": m.id, "nombre": m.nombre} for m in db.scalars(select(MaterialReciclaje))],
-        "usuarios": [{"id": u.id, "nombre": u.nombre, "rol": u.rol}
-                     for u in db.scalars(select(Usuario).where(Usuario.activo, Usuario.rol != "lectura"))],
+        "especies": [{"id": e.id, "nombre": e.nombre} for e in db.scalars(select(Especie).order_by(Especie.nombre))],
+        "materiales_reciclaje": [{"id": c.id, "nombre": c.nombre} for c in db.scalars(
+            select(ConceptoAmbiental).where(ConceptoAmbiental.categoria == "reciclaje", ConceptoAmbiental.activo)
+            .order_by(ConceptoAmbiental.nombre))],
+        "usuarios": [{"id": u.id, "nombre": u.nombre or u.usuario, "rol": u.rol}
+                     for u in _usuarios_app(db) if u.rol != "lectura"],
     }
 
 

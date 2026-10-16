@@ -36,21 +36,14 @@ class DocumentoEntrada(BaseModel):
     categoria_id: int
     empresa_id: int
     seccion: Literal["campo", "planta", "empresarial"]
-    temporada_id: int | None = None
     titulo: str = Field(min_length=2, max_length=250)
     codigo: str | None = Field(default=None, max_length=40)
-    responsable: str | None = Field(default=None, max_length=120)
-    protocolo_ids: list[int] = []
-    requisito_ids: list[int] = []
     version: VersionEntrada
 
 
 class DocumentoCambios(BaseModel):
     titulo: str | None = Field(default=None, min_length=2, max_length=250)
-    codigo: str | None = None
-    responsable: str | None = None
-    protocolo_ids: list[int] | None = None
-    requisito_ids: list[int] | None = None
+    codigo: str | None = Field(default=None, max_length=40)
 
 
 class CapacitacionEntrada(BaseModel):

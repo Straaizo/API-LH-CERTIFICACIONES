@@ -22,7 +22,7 @@ from sqlalchemy import text
 
 from config import Config
 from routers import (
-    ambiente, archivos, auditorias, carpeta, catalogos, documentos, laboratorio, no_conformidades, registros, tablero,
+    ambiente, archivos, auditorias, auth, carpeta, catalogos, documentos, laboratorio, no_conformidades, registros, tablero,
 )
 from utils.db import SessionLocal
 from utils.docs_html import get_docs_html
@@ -48,7 +48,8 @@ app = FastAPI(
     openapi_tags=[
         {"name": "⚙️ Sistema",          "description": "Estado y monitoreo de la API"},
         {"name": "🗄️ Base de Datos",    "description": "Verificación de conexión"},
-        {"name": "📍 Catálogos",         "description": "Sitios, temporadas, protocolos, usuarios"},
+        {"name": "🔐 Sesión",            "description": "Inicio de sesión con usuario o correo + clave (JWT)"},
+        {"name": "📍 Catálogos",         "description": "Sucursales, temporadas, protocolos, usuarios"},
         {"name": "📎 Archivos",          "description": "URLs firmadas para subir y bajar archivos"},
         {"name": "📄 Documentos fijos",  "description": "Documentos subidos: versiones, revisión, capacitaciones y vencimientos"},
         {"name": "📝 Registros",         "description": "Plantillas de certificaciones, llenado por encargados, aprobación y descarga Word/PDF"},
@@ -57,7 +58,7 @@ app = FastAPI(
         {"name": "⚠️ No conformidades",  "description": "Levantamientos, cierre y reincidencias"},
         {"name": "🌿 Medio ambiente",    "description": "Huella de carbono y reciclaje"},
         {"name": "📊 Tablero y bitácora", "description": "Resumen de inicio y registro de cambios"},
-        {"name": "🗂️ Carpeta auditor",   "description": "ZIP con evidencias por protocolo, empresa, unidad y temporada"},
+        {"name": "🗂️ Carpeta auditor",   "description": "ZIP con evidencias por protocolo, empresa, sucursal y temporada"},
     ],
 )
 
@@ -106,6 +107,7 @@ async def unhandled_exception_handler(request: Request, exc: Exception):
 # Para registrar un nuevo módulo, añadir una línea a esta lista
 
 ROUTERS = [
+    (auth,             "🔐 Sesión"),
     (catalogos,        "📍 Catálogos"),
     (archivos,         "📎 Archivos"),
     (documentos,       "📄 Documentos fijos"),

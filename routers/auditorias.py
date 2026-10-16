@@ -6,13 +6,15 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
-from utils.auth import solo_certificaciones, usuario_actual, verificar_unidad
+from utils.auth import NC, solo_certificaciones, tiene_permiso, usuario_actual, verificar_unidad
 from utils.bitacora import registrar
-from utils.comunes import filtrar_unidades, obtener, temporada_para_fecha, unidad_dict
+from utils.comunes import (
+    filtrar_temporada, filtrar_unidades, obtener, obtener_temporada, temporada_dict, temporada_para_fecha, unidad_dict,
+)
 from utils.db import get_db
 from utils.exportar_auditoria import exportar_auditoria
 from utils.modelos import (
-    Area, Auditoria, NoConformidad, Requisito, Respuesta, Temporada, Unidad, Usuario, VersionNorma,
+    Area, Auditoria, NoConformidad, Requisito, Respuesta, Unidad, Usuario, VersionNorma, usuario_sucursales,
 )
 from utils.no_conformidades import sincronizar_nc
 from utils.servicio_importacion import importar_brcgs, importar_checklist
@@ -77,7 +79,7 @@ def resumen_respuestas(respuestas: list[Respuesta]) -> dict:
 
 
 def titulo_auditoria(a: Auditoria) -> str:
-    return a.titulo or f"Auditoría interna {a.version.protocolo.nombre} · {a.unidad.nombre} · {a.fecha:%m-%Y}"
+    return a.titulo or f"Auditoría interna {a.version.protocolo.nombre} · {a.unidad.etiqueta} · {a.fecha:%m-%Y}"
 
 
 def _auditoria_dict(a: Auditoria, ncs: int = 0) -> dict:
@@ -101,8 +103,7 @@ def listar(empresa_id: int | None = None, unidad_id: int | None = None, temporad
     consulta = filtrar_unidades(
         select(Auditoria).options(selectinload(Auditoria.respuestas).selectinload(Respuesta.requisito)),
         Auditoria.unidad_id, usuario, empresa_id, unidad_id)
-    if temporada_id:
-        consulta = consulta.where(Auditoria.temporada_id == temporada_id)
+    consulta = filtrar_temporada(db, consulta, temporada_id, Auditoria.fecha, Auditoria.unidad_id)
     if protocolo_id:
         consulta = consulta.where(Auditoria.version_id.in_(
             select(VersionNorma.id).where(VersionNorma.protocolo_id == protocolo_id)))
@@ -119,16 +120,15 @@ def planificar(datos: AuditoriaEntrada, usuario: Usuario = Depends(solo_certific
     version = obtener(db, VersionNorma, datos.version_id)
     unidad = obtener(db, Unidad, datos.unidad_id)
     if not version.protocolo.aplica_a(unidad):
-        raise HTTPException(400, f"{version.protocolo.nombre} no aplica a {unidad.nombre}")
+        raise HTTPException(400, f"{version.protocolo.nombre} no aplica a {unidad.etiqueta}")
     if datos.fecha_fin and datos.fecha_fin < datos.fecha_inicio:
         raise HTTPException(400, "La fecha de fin no puede ser anterior a la de inicio")
-    temporada = temporada_para_fecha(db, datos.fecha_inicio)
-    if not temporada:
+    if not temporada_para_fecha(db, datos.fecha_inicio, unidad.empresa_id):
         raise HTTPException(400, "La fecha no cae en ninguna temporada registrada")
     # Sin cláusulas: la auditoría incluye todas las de la versión de la norma
     auditoria = Auditoria(version_id=version.id, unidad_id=unidad.id, titulo=(datos.titulo or "").strip() or None,
                           fecha=datos.fecha_inicio, fecha_fin=datos.fecha_fin, auditor=datos.auditor, secciones=[],
-                          temporada_id=temporada.id, estado="planificada", origen="app")
+                          estado="planificada", origen="app")
     db.add(auditoria)
     db.flush()
     registrar(db, usuario, "planificar", "auditoria", auditoria.id, datos.model_dump(mode="json"))
@@ -147,10 +147,8 @@ def modificar(auditoria_id: int, datos: AuditoriaCambios, usuario: Usuario = Dep
     if auditoria.emitida_en and set(cambios) - {"titulo"}:
         raise HTTPException(400, "El informe ya fue emitido")
     if "fecha_inicio" in cambios:
-        temporada = temporada_para_fecha(db, cambios["fecha_inicio"])
-        if not temporada:
+        if not temporada_para_fecha(db, cambios["fecha_inicio"], auditoria.unidad.empresa_id):
             raise HTTPException(400, "La fecha no cae en ninguna temporada registrada")
-        auditoria.temporada_id = temporada.id
         auditoria.fecha = cambios.pop("fecha_inicio")
     for campo, valor in cambios.items():
         setattr(auditoria, campo, valor)
@@ -232,8 +230,10 @@ def avance_clausulas(auditoria: Auditoria, requisitos: list[Requisito]) -> list[
 
 
 def _encargado_de(db: Session, unidad_id: int) -> Usuario | None:
-    return next((u for u in db.scalars(select(Usuario).where(Usuario.rol == "encargado", Usuario.activo))
-                 if any(x.id == unidad_id for x in u.unidades)), None)
+    """Jefe de la sucursal: usuario activo con esa sucursal y permiso para responder no conformidades."""
+    candidatos = db.scalars(select(Usuario).where(Usuario.id_estado == 1, Usuario.id.in_(
+        select(usuario_sucursales.c.id_usuario).where(usuario_sucursales.c.id_sucursal == unidad_id))))
+    return next((u for u in candidatos if u.rol == "encargado" and tiene_permiso(u, NC)), None)
 
 
 @router.post("/auditorias/{auditoria_id}/emitir")
@@ -326,7 +326,7 @@ def responder(auditoria_id: int, requisito_id: int, datos: RespuestaEntrada,
 def programa(temporada_id: int, empresa_id: int | None = None, unidad_id: int | None = None,
              protocolo_id: int | None = None, usuario: Usuario = Depends(usuario_actual),
              db: Session = Depends(get_db)) -> dict:
-    temporada = obtener(db, Temporada, temporada_id)
+    temporada = obtener_temporada(db, temporada_id)
     auditorias = listar(empresa_id, unidad_id, temporada_id, protocolo_id, usuario, db)
     grupos: dict[tuple[int, int], dict] = {}
     for a in auditorias:
@@ -372,8 +372,7 @@ def programa(temporada_id: int, empresa_id: int | None = None, unidad_id: int | 
         cubiertas = sum(1 for c in cobertura if c["estado"] == "cubierta")
         filas.append(grupo | {"cobertura": cobertura,
                               "porcentaje": round(cubiertas / len(cobertura) * 100) if cobertura else None})
-    return {"temporada": {"id": temporada.id, "nombre": temporada.nombre, "inicio": temporada.inicio,
-                          "fin": temporada.fin}, "filas": filas}
+    return {"temporada": temporada_dict(temporada), "filas": filas}
 
 
 # ---------- Importación de planillas ----------

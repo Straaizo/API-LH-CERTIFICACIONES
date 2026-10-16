@@ -11,11 +11,10 @@ from routers.laboratorio import listar as listar_analisis
 from routers.no_conformidades import listar as listar_nc
 from routers.registros import _atraso
 from utils.auth import solo_certificaciones, usuario_actual
-from utils.comunes import filtrar_unidades, temporada_actual
+from utils.comunes import buscar_temporada, filtrar_unidades, temporada_actual
 from utils.db import get_db
 from utils.modelos import (
-    Bitacora, Certificacion, Empresa, Protocolo, Registro,
-    Temporada, Usuario,
+    Bitacora, Certificacion, Empresa, Protocolo, Registro, Usuario,
 )
 
 router = APIRouter()
@@ -50,7 +49,7 @@ def _semaforo(cert: Certificacion | None, auditorias: list[dict], ncs: list[dict
 def dashboard(empresa_id: int | None = None, unidad_id: int | None = None, temporada_id: int | None = None,
               protocolo_id: int | None = None, usuario: Usuario = Depends(usuario_actual),
               db: Session = Depends(get_db)) -> dict:
-    temporada = db.get(Temporada, temporada_id) if temporada_id else temporada_actual(db)
+    temporada = buscar_temporada(db, temporada_id) if temporada_id else temporada_actual(db)
     t_id = temporada.id if temporada else None
     auditorias = listar_auditorias(empresa_id=empresa_id, unidad_id=unidad_id, temporada_id=t_id,
                                    protocolo_id=protocolo_id, usuario=usuario, db=db)
@@ -72,7 +71,7 @@ def dashboard(empresa_id: int | None = None, unidad_id: int | None = None, tempo
                                .order_by(Certificacion.vigente_hasta.desc())).all()
             if unidad_id:
                 certs = [c for c in certs if unidad_id in {u.id for u in c.unidades}]
-            unidades_e = [u for x in e.ubicaciones for u in x.unidades if not unidad_id or u.id == unidad_id]
+            unidades_e = [u for u in e.sucursales if not unidad_id or u.id == unidad_id]
             if not any(p.aplica_a(u) for u in unidades_e):
                 continue
             aud = [a for a in auditorias if a["protocolo"]["id"] == p.id and a["unidad"]["empresa_id"] == e.id

@@ -1,17 +1,18 @@
 """Registros: documentos no fijos que certificaciones define como plantilla y los encargados llenan en la app."""
 import re
-from datetime import date
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from fastapi.responses import Response
 from pydantic import BaseModel, Field
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from utils import almacenamiento
-from utils.auth import es_certificaciones, puede_escribir, solo_certificaciones, usuario_actual, verificar_unidad
+from utils.auth import (
+    REGISTROS, es_certificaciones, requiere_permiso, solo_certificaciones, usuario_actual, verificar_unidad,
+)
 from utils.bitacora import registrar
-from utils.comunes import filtrar_unidades, obtener, temporada_para_fecha, unidad_dict
+from utils.comunes import filtrar_temporada, filtrar_unidades, obtener, unidad_dict
 from utils.db import get_db
 from utils.exportar_registro import a_pdf, a_word
 from utils.importar_plantilla_word import leer_plantilla_word
@@ -79,7 +80,7 @@ class RegistroEntrada(BaseModel):
     plantilla_id: int
     unidad_id: int
     titulo: str = Field(min_length=2, max_length=250)
-    responsable_id: int | None = None
+    responsable_id: str | None = None
 
 
 class Revision(BaseModel):
@@ -381,8 +382,7 @@ def listar(empresa_id: int | None = None, unidad_id: int | None = None, temporad
            estado: str | None = None, plantilla_id: int | None = None, usuario: Usuario = Depends(usuario_actual),
            db: Session = Depends(get_db)) -> list[dict]:
     consulta = filtrar_unidades(select(Registro), Registro.unidad_id, usuario, empresa_id, unidad_id)
-    if temporada_id:
-        consulta = consulta.where(Registro.temporada_id == temporada_id)
+    consulta = filtrar_temporada(db, consulta, temporada_id, func.date(Registro.creado_en), Registro.unidad_id)
     if estado:
         consulta = consulta.where(Registro.estado == estado)
     if plantilla_id:
@@ -400,8 +400,7 @@ def crear(datos: RegistroEntrada, usuario: Usuario = Depends(solo_certificacione
     if plantilla.ambito != "ambos" and unidad.tipo != plantilla.ambito:
         raise HTTPException(400, f"La plantilla es de {plantilla.ambito} y la sucursal es {unidad.tipo}")
     responsable = obtener(db, Usuario, datos.responsable_id) if datos.responsable_id else None
-    temporada = temporada_para_fecha(db, date.today())
-    registro = Registro(plantilla_id=plantilla.id, unidad_id=unidad.id, temporada_id=temporada.id if temporada else None,
+    registro = Registro(plantilla_id=plantilla.id, unidad_id=unidad.id,
                         titulo=datos.titulo.strip(), codigo=plantilla.codigo, version=plantilla.version,
                         formato=plantilla.formato or {}, word_clave=plantilla.word_clave, campos=plantilla.campos,
                         valores=valores_iniciales(plantilla.campos, responsable),
@@ -420,7 +419,7 @@ def _evento_dict(b: Bitacora, registros: dict[int, Registro] | None = None) -> d
              "accion": b.accion, "detalle": b.detalle or {}, "registro_id": b.entidad_id}
     if registros is not None and b.entidad_id in registros:
         r = registros[b.entidad_id]
-        datos["registro"] = {"id": r.id, "titulo": r.titulo, "codigo": r.codigo, "unidad": r.unidad.nombre,
+        datos["registro"] = {"id": r.id, "titulo": r.titulo, "codigo": r.codigo, "unidad": r.unidad.etiqueta,
                              "estado": r.estado}
     return datos
 
@@ -451,7 +450,7 @@ def detalle(registro_id: int, usuario: Usuario = Depends(usuario_actual), db: Se
 
 
 @router.put("/{registro_id}/valores")
-def guardar_valores(registro_id: int, valores: dict, usuario: Usuario = Depends(puede_escribir),
+def guardar_valores(registro_id: int, valores: dict, usuario: Usuario = Depends(requiere_permiso(REGISTROS)),
                     db: Session = Depends(get_db)) -> dict:
     """Guarda lo llenado (parcial o completo). Solo en borrador o rechazado."""
     registro = obtener(db, Registro, registro_id)
@@ -494,7 +493,8 @@ def guardar_valores(registro_id: int, valores: dict, usuario: Usuario = Depends(
 
 
 @router.post("/{registro_id}/enviar")
-def enviar(registro_id: int, usuario: Usuario = Depends(puede_escribir), db: Session = Depends(get_db)) -> dict:
+def enviar(registro_id: int, usuario: Usuario = Depends(requiere_permiso(REGISTROS)),
+           db: Session = Depends(get_db)) -> dict:
     registro = obtener(db, Registro, registro_id)
     _puede_llenar(usuario, registro)
     if registro.estado not in ESTADOS_EDITABLES:
@@ -537,7 +537,7 @@ def exportar(registro_id: int, formato: str = "pdf", usuario: Usuario = Depends(
     verificar_unidad(usuario, registro.unidad_id)
     if registro.estado != "aprobado" and not es_certificaciones(usuario):
         raise HTTPException(400, "Solo se descargan registros aprobados")
-    nombre = nombre_archivo_seguro(f"{registro.titulo} - {registro.unidad.nombre}")
+    nombre = nombre_archivo_seguro(f"{registro.titulo} - {registro.unidad.etiqueta}")
     try:
         if formato == "docx":
             original = almacenamiento.leer(registro.word_clave) if registro.word_clave else None

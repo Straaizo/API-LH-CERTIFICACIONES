@@ -2,7 +2,9 @@
 # DATOS SENSIBLES - NUNCA SUBIR AL REPOSITORIO
 # =============================================
 .env*
-!.env.example
+# Plantillas de variables: tampoco se publican (solo locales)
+env.ejemplo
+*.ejemplo
 *.pem
 *.key
 *.p12

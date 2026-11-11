@@ -24,3 +24,5 @@ gcp-credentials*.json
 *.xlsm
 *.log
 .pytest_cache/
+env.ejemplo
+*.ejemplo

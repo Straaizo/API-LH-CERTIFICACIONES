@@ -19,7 +19,11 @@ class Config:
     DEV_PORT = int(os.getenv("DEV_PORT", 8080))
 
     # ── CORS ──────────────────────────────────────────────────────────────────
-    ORIGENES_PERMITIDOS = _lista(os.getenv("ORIGENES_PERMITIDOS", "http://localhost:5173"))
+    # Fijos en el código, como LH Inventario: el frontend publicado en Firebase Hosting. En local se suma Vite.
+    # ORIGENES_PERMITIDOS (opcional) agrega otros, por ejemplo un dominio propio.
+    ORIGENES_FIJOS = ["https://certificaciones-ea86d.web.app", "https://certificaciones-ea86d.firebaseapp.com"]
+    ORIGENES_PERMITIDOS = ORIGENES_FIJOS + _lista(os.getenv(
+        "ORIGENES_PERMITIDOS", "" if ENTORNO == "produccion" else "http://localhost:5173"))
 
     # ── Conexión a base de datos ──────────────────────────────────────────────
     # sqlite = demo local en privado/demo.db | mysql (Cloud SQL)
@@ -28,11 +32,9 @@ class Config:
     # DATABASE_URL (formato SQLAlchemy) se usa en Cloud Run. Si no está, se arma con DB_*.
     DATABASE_URL = os.getenv("DATABASE_URL", "")
 
-    # Cuando corre en Cloud Run (K_SERVICE definido) el proxy escucha en localhost.
-    if os.getenv("K_SERVICE"):
-        DB_HOST = "localhost"
-    else:
-        DB_HOST = os.getenv("DB_HOST", "127.0.0.1")
+    # Cloud Run (K_SERVICE definido): DB_HOST = IP privada de Cloud SQL (salida por la VPC); sin ella, localhost.
+    # Local: el Cloud SQL Auth Proxy en 127.0.0.1.
+    DB_HOST = os.getenv("DB_HOST") or ("localhost" if os.getenv("K_SERVICE") else "127.0.0.1")
     DB_PORT = os.getenv("DB_PORT", "")
     DB_USER = os.getenv("DB_USER", "")
     DB_PASSWORD = os.getenv("DB_PASSWORD", "")

@@ -1,7 +1,9 @@
 # Lo que NO se sube a Google Cloud con `gcloud run deploy --source .`
 # Credenciales y variables locales (en Cloud Run van como variables o Secret Manager)
 .env*
-!.env.example
+# Plantillas de variables: tampoco se publican (solo locales)
+env.ejemplo
+*.ejemplo
 *.pem
 *.key
 *.p12

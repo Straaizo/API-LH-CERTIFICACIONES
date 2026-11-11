@@ -1,7 +1,7 @@
-<h1 align="center">Certificaciones VS y LH — API</h1>
+<h1 align="center">Certificaciones LH y VS — API</h1>
 
 <p align="center">
-  API REST del sistema de certificaciones de <strong>Agrícola Viento Sur</strong> y <strong>Agrícola La Hornilla</strong>.
+  API REST del sistema de certificaciones de <strong>Agrícola La Hornilla</strong> y <strong>Agrícola Viento Sur</strong>.
   <br/>
   Documentos fijos y vencimientos, registros, auditorías y no conformidades, laboratorio y medio ambiente en una sola plataforma.
 </p>
@@ -70,7 +70,7 @@ API FastAPI (Cloud Run, southamerica-west1)  ──►  Cloud Storage (archivos,
         │  IP privada
         ▼
 Cloud SQL (lahornilla_base_normalizada)
-   ├── tablas propias:     certificaciones_dim_* · certificaciones_fact_* · certificaciones_pivot_* · vistas certificaciones_vw_*
+   ├── tablas propias:     certificaciones_dim_* · certificaciones_fact_* · certificaciones_pivot_* · vistas v_certificaciones_*
    └── tablas compartidas: general_dim_empresa · general_dim_sucursal · general_dim_sucursaltipo · general_dim_temporada
                            general_dim_usuario · general_dim_app · usuario_dim_permiso · usuario_pivot_* (portal web)
 ```
@@ -86,12 +86,21 @@ Cloud SQL (lahornilla_base_normalizada)
 | Dimensión | `certificaciones_dim_*` | Catálogos y entidades que cambian poco: normas y sus versiones, puntos de control, plantillas, tipos de análisis, conceptos ambientales |
 | Hecho | `certificaciones_fact_*` | Lo que ocurre en el tiempo: auditorías, respuestas, no conformidades, registros, análisis, consumos y reciclaje, bitácora |
 | Puente | `certificaciones_pivot_sucursal_protocolo` | Única relación muchos a muchos: qué normas tiene cada sucursal |
-| Vista | `certificaciones_vw_*` | Temporadas desde 2024, vencimientos, huella y análisis por temporada, estado de las NC y tablero |
+| Vista | `v_certificaciones_*` | Temporadas desde 2024, vencimientos, huella y análisis por temporada, estado de las NC y tablero |
 
 - **Tablas compartidas de la empresa**: empresas, sucursales (con su empresa y su tipo: campo, packing…), temporadas (mayo a abril, por empresa) y usuarios se leen de las tablas que ya existen en la base de La Hornilla. Certificaciones nunca las modifica.
-- **Acceso y permisos**: los da el portal web. El usuario entra con su usuario o correo y clave (como en LH Inventario), necesita acceso a la app y ve solo sus sucursales. Lo que puede editar sale de sus permisos (`CERTIFICACIONES_ADMIN`, `REGISTROS_EDITAR`, `NC_EDITAR`, `LABORATORIO_EDITAR`, `AMBIENTE_EDITAR`, `CERTIFICACIONES_VER`).
+- **Acceso y permisos**: los da el portal web. El usuario entra con su usuario o correo y clave (como en LH Inventario), necesita acceso a la app y ve solo sus sucursales. Qué módulos ve y cuáles edita sale de sus permisos: `<MÓDULO>_VER` o `<MÓDULO>_EDITAR` para `REGISTROS`, `NC`, `LABORATORIO` y `AMBIENTE`, más `AUDITORIAS_VER` y `DOCUMENTOS_VER` (`utils/auth.py`: `requiere_ver`, `requiere_permiso`). `CERTIFICACIONES_ADMIN` ve y edita todo; `CERTIFICACIONES_VER` ve todo sin editar. El historial completo de cambios (`/historial`) lo ve solo quien tiene `CERTIFICACIONES_HISTORIAL`, que se asigna aparte: `CERTIFICACIONES_ADMIN` no basta.
 - **Temporada**: no se guarda en cada dato; se deduce de su fecha y de la empresa de la sucursal.
 - Diagrama, tablas y script de creación: `docs/modelo-datos/` (carpeta del proyecto, fuera de este repositorio) y `migrations/`.
+
+---
+
+## Seguridad
+
+- **Acceso:** usuario o correo + clave del portal web, contraseñas con bcrypt y tokens JWT de acceso y de refresco separados. Cada usuario ve solo sus sucursales y edita solo los módulos que su permiso le da.
+- **Contra el abuso:** límite de peticiones por IP (más estricto para subidas, PDF, Word, ZIP y lectura de informes), bloqueo escalonado de la IP que insiste (15 min y luego 24 h), listas de IPs permitidas y bloqueadas, y pausa del inicio de sesión ante intentos fallidos por IP y por cuenta. La IP se toma de la que agrega Google en Cloud Run, no de la que pueda inventar el cliente.
+- **Archivos:** Cloud Storage privado con URLs firmadas de pocos minutos; el tamaño máximo va firmado en la URL de subida, y solo se aceptan PDF, imágenes, Word y Excel.
+- **Producción:** sin documentación pública de la API, sin modo demo, cabeceras de seguridad (HSTS incluido), errores sin detalles internos y todo cambio de datos en la bitácora.
 
 ---
 
@@ -104,8 +113,9 @@ Cloud SQL (lahornilla_base_normalizada)
 | 📄 Documentos fijos | Documentos por sección (campo, planta, empresarial), versiones, fichas de certificados y vencimientos |
 | 📝 Registros | Plantillas importadas desde Word y registros llenados en terreno, con revisión y aprobación |
 | ✅ Auditorías | Programa de auditorías, checklist por versión de norma y respuestas punto por punto |
+| 📑 Auditorías externas | Informes de la certificadora como documento de consulta: resumen, versiones y descarga en PDF o Word |
 | ⚠️ No conformidades | Hallazgos, análisis de causa, acciones, evidencia, revisión, cierre y reincidencias |
-| 🧪 Laboratorio | Análisis de agua, suelo, hoja, fruta y residuos frente a sus límites |
+| 🧪 Laboratorio | Análisis de agua, suelo, hoja, fruta y residuos frente a sus límites; residuos (MRL) contra los límites de ASOEX por país de destino |
 | 🌿 Medio ambiente | Consumos, reciclaje, huella de carbono y comparativa de temporadas |
 | 📊 Tablero y bitácora | Indicadores de inicio, semáforo por protocolo e historial de cambios |
 | 🗂️ Carpeta auditor | Evidencia vigente reunida para una auditoría externa |
@@ -126,6 +136,7 @@ API-CERTIFICACIONES/
 │   ├── registros.py
 │   ├── laboratorio.py
 │   ├── auditorias.py
+│   ├── auditorias_externas.py # Informes de la certificadora (solo consulta)
 │   ├── no_conformidades.py
 │   ├── ambiente.py
 │   ├── tablero.py
@@ -142,8 +153,10 @@ API-CERTIFICACIONES/
 │   ├── importadores.py        # Auditorías internas BRCGS
 │   ├── importar_plantilla_word.py / rellenar_word.py / exportar_registro.py
 │   ├── leer_informe_lab.py    # Valores desde el informe del laboratorio
+│   ├── importar_asoex.py / mrl.py / leer_carta_destino.py  # Límites ASOEX, informes MRL y carta de destino
+│   ├── leer_auditoria_externa.py / exportar_auditoria_externa.py
 │   ├── no_conformidades.py    # No conformidades automáticas y reincidencias
-│   └── bitacora.py            # Registro de cambios
+│   └── historial.py           # Historial de cambios
 ├── jobs/                      # Tareas programadas (aviso de vencimientos)
 ├── migrations/                # Esquema de la base
 └── tests/                     # Pruebas con datos ficticios

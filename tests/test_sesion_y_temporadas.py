@@ -11,6 +11,7 @@ from sqlalchemy.pool import StaticPool
 
 from config import Config
 from main import app
+from routers import auth as rutas_auth
 from utils.auth import unidades_permitidas
 from utils.db import Base, get_db
 from utils.modelos import (
@@ -60,6 +61,9 @@ def sesion():
 
 @pytest.fixture()
 def cliente(sesion, monkeypatch):
+    # El piso de tiempo del login se prueba aparte (test_login_tarda_lo_mismo); aquí haría lentas las pruebas
+    monkeypatch.setattr(rutas_auth, "PISO_LOGIN", 0.0)
+    monkeypatch.setattr(rutas_auth, "AZAR_LOGIN", 0.0)
     monkeypatch.setattr(Config, "AUTH_MODO", "jwt")
     monkeypatch.setattr(Config, "JWT_SECRET_KEY", secrets.token_hex(32))
     app.dependency_overrides[get_db] = lambda: sesion
@@ -87,12 +91,16 @@ def test_login_rechazado(cliente, ident, clave, codigo):
     assert cliente.post("/api/auth/login", json={"usuario": ident, "clave": clave}).status_code == codigo
 
 
-def test_login_bloquea_tras_intentos_fallidos(cliente, monkeypatch):
-    from routers import auth as rauth
-    monkeypatch.setattr(rauth, "_fallos", type(rauth._fallos)(rauth._fallos.default_factory))
-    for _ in range(rauth.MAX_FALLOS):
+def test_login_bloquea_tras_intentos_fallidos(cliente):
+    from utils import proteccion
+    for d in (proteccion._fallos_ip, proteccion._fallos_cuenta, proteccion._pausa):
+        d.clear()
+    for _ in range(proteccion.MAX_FALLOS_IP):
         cliente.post("/api/auth/login", json={"usuario": "ladmin", "clave": "mala"})
-    assert cliente.post("/api/auth/login", json={"usuario": "ladmin", "clave": CLAVE}).status_code == 429
+    r = cliente.post("/api/auth/login", json={"usuario": "ladmin", "clave": CLAVE})
+    assert r.status_code == 429 and int(r.headers["Retry-After"]) > 0
+    for d in (proteccion._fallos_ip, proteccion._fallos_cuenta, proteccion._pausa):
+        d.clear()
 
 
 def test_permisos_solo_de_esta_app_y_sucursales(sesion):
@@ -115,3 +123,28 @@ def test_temporadas_por_empresa(sesion):
     assert sesion.scalar(select(condicion)) == 1
     condicion = en_temporada(t2526, literal(date(2026, 5, 15)), literal(105))
     assert sesion.scalar(select(condicion)) == 0
+
+
+def test_modulos_visibles_por_permiso(sesion):
+    """Ver un módulo: su _VER o _EDITAR; ADMIN y CERTIFICACIONES_VER ven todos. El permiso de otra app no cuenta."""
+    from utils.auth import modulos_visibles, puede_ver, ve_todo
+    admin, jefe = sesion.get(Usuario, "u-admin"), sesion.get(Usuario, "u-jefe")
+    assert modulos_visibles(admin) == ["REGISTROS", "DOCUMENTOS", "LABORATORIO", "AUDITORIAS", "NC", "AMBIENTE"]
+    assert ve_todo(admin)
+    # NC_EDITAR incluye ver NC; el CERTIFICACIONES_ADMIN de LH INVENTARIO (app 10) no le da nada aquí
+    assert modulos_visibles(jefe) == ["NC"]
+    assert not ve_todo(jefe) and not puede_ver(jefe, "LABORATORIO")
+
+
+def test_login_tarda_lo_mismo_exista_o_no_el_usuario(cliente, monkeypatch):
+    """Medir el tiempo no debe revelar si el usuario existe ni si la clave estuvo cerca."""
+    import time
+    monkeypatch.setattr(rutas_auth, "PISO_LOGIN", 0.3)
+    tiempos = {}
+    for caso, ident, clave in (("noexiste", "fantasma", CLAVE), ("clave_mala", "ladmin", CLAVE[:-1] + "x"),
+                               ("clave_larga", "fantasma", "x" * 200)):
+        inicio = time.perf_counter()
+        r = cliente.post("/api/auth/login", json={"usuario": ident, "clave": clave})
+        tiempos[caso] = time.perf_counter() - inicio
+        assert r.status_code == 401
+    assert all(t >= 0.3 for t in tiempos.values()), tiempos

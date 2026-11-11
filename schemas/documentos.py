@@ -6,7 +6,7 @@ from pydantic import BaseModel, Field
 
 class CertificadoEntrada(BaseModel):
     """Ficha de un certificado de protocolo (categoría Certificados). El vencimiento es el de la versión."""
-    protocolo_id: int
+    protocolo_id: str
     numero: str | None = Field(default=None, max_length=40)
     norma_version: str | None = Field(default=None, max_length=40)
     entidad_certificadora: str | None = Field(default=None, max_length=120)
@@ -33,7 +33,7 @@ class ArchivoSubidoEntrada(BaseModel):
 
 
 class DocumentoEntrada(BaseModel):
-    categoria_id: int
+    categoria_id: str
     empresa_id: int
     seccion: Literal["campo", "planta", "empresarial"]
     titulo: str = Field(min_length=2, max_length=250)
@@ -53,4 +53,4 @@ class CapacitacionEntrada(BaseModel):
     relator: str | None = None
     asistentes: list[str] = []
     vigente_hasta: date | None = None
-    documento_id: int | None = None
+    documento_id: str | None = None

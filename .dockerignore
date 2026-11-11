@@ -10,3 +10,17 @@ tests/
 privado/
 .git/
 CLAUDE.md
+*.pem
+*.key
+*.p12
+*.pfx
+secrets/
+credentials/
+credenciales*.json
+service-account*.json
+gcp-credentials*.json
+*-sa.json
+*.xls
+*.xlsm
+*.log
+.pytest_cache/

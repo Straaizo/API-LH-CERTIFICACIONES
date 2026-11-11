@@ -10,10 +10,10 @@ Personalizar por app editando las constantes al inicio:
   HIDE_TAGS    — tags de Swagger que se ocultan (aparecen en el panel de estado)
 """
 
-APP_TITLE    = "Certificaciones <span>VS y LH</span>"
+APP_TITLE    = "Certificaciones <span>LH y VS</span>"
 APP_SUBTITLE = "API DE CERTIFICACIONES"
 PANEL_TITLE  = "API Certificaciones"
-PANEL_SUB    = "Documentos, auditorías, no conformidades, laboratorio y medio ambiente · Viento Sur y La Hornilla"
+PANEL_SUB    = "Documentos, auditorías, no conformidades, laboratorio y medio ambiente · La Hornilla y Viento Sur"
 
 # tipo: "fact" (verde) | "dim" (azul) | "view" (violeta)
 MODULES = [
@@ -65,7 +65,7 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
 <head>
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1"/>
-<title>Certificaciones VS y LH — API</title>
+<title>Certificaciones LH y VS — API</title>
 <link rel="preconnect" href="https://fonts.googleapis.com"/>
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/>
 <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@400;500;600;700&display=swap" rel="stylesheet"/>

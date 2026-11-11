@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session
 from routers.auditorias import detalle as detalle_auditoria
 from routers.documentos import version_vigente
 from utils import almacenamiento
-from utils.auth import usuario_actual, verificar_unidad
+from utils.auth import requiere_ver, verificar_unidad
 from utils.comunes import en_temporada, obtener, obtener_temporada
 from utils.db import get_db
 from utils.modelos import (
@@ -38,8 +38,10 @@ def _excel(encabezado: list[str], filas: list[list]) -> bytes:
 
 
 @router.get("/carpeta-auditor")
-def carpeta_auditor(protocolo_id: int, empresa_id: int, temporada_id: int, unidad_id: int | None = None,
-                    usuario: Usuario = Depends(usuario_actual), db: Session = Depends(get_db)) -> StreamingResponse:
+def carpeta_auditor(protocolo_id: str, empresa_id: int, temporada_id: int, unidad_id: int | None = None,
+                    # Junta documentos y checklists de auditorías: hay que poder ver ambos módulos
+                    usuario: Usuario = Depends(requiere_ver("DOCUMENTOS", "AUDITORIAS")),
+                    db: Session = Depends(get_db)) -> StreamingResponse:
     protocolo = obtener(db, Protocolo, protocolo_id)
     empresa = obtener(db, Empresa, empresa_id)
     temporada = obtener_temporada(db, temporada_id)

@@ -57,7 +57,8 @@ PORT   = int(os.getenv("DEV_PORT", 8080))
 RELOAD = True
 URL    = f"http://{HOST}:{PORT}"
 
-db_motor = os.getenv("DB_MOTOR", "sqlite")
+# Misma regla que config.py: DB_ENV=gcp_proxy equivale a DB_MOTOR=mysql
+db_motor = os.getenv("DB_MOTOR") or ("mysql" if os.getenv("DB_ENV") == "gcp_proxy" else "sqlite")
 db_url   = os.getenv("DATABASE_URL", "")
 if db_url:
     modo_bd = "Cloud SQL (DATABASE_URL)"
@@ -89,7 +90,7 @@ if __name__ == "__main__":
 
         print()
         print("╔══════════════════════════════════════════════════════════╗")
-        print("║        API Certificaciones VS y LH — FASTAPI             ║")
+        print("║        API Certificaciones LH y VS — FASTAPI             ║")
         print("╠══════════════════════════════════════════════════════════╣")
         print(f"║ Servidor:   {URL:<45}║")
         print(f"║ Swagger UI: {URL + '/docs':<45}║")

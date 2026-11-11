@@ -1,3 +1,4 @@
+import hashlib
 import io
 import re
 from datetime import date
@@ -14,10 +15,11 @@ from schemas.documentos import (
 )
 from utils import almacenamiento
 from utils.auth import (
-    puede_escribir, solo_certificaciones, unidades_permitidas, usuario_actual, verificar_unidad,
+    puede_escribir, puede_ver, requiere_ver, solo_certificaciones, unidades_permitidas, usuario_actual, verificar_unidad,
 )
-from utils.bitacora import registrar
+from utils.historial import registrar
 from utils.comunes import dias_para, filtrar_temporada, filtrar_unidades, obtener, unidad_dict
+from utils.duplicados import error_duplicado, existente
 from utils.db import get_db
 from utils.analizar_documento import analizar
 from utils.modelos import (
@@ -109,8 +111,8 @@ def _consulta_documentos(db: Session, usuario: Usuario, empresa_id, unidad_id, p
 
 @router.get("/documentos")
 def listar(empresa_id: int | None = None, unidad_id: int | None = None, temporada_id: int | None = None,
-           protocolo_id: int | None = None, categoria_id: int | None = None, seccion: str | None = None,
-           q: str | None = None, usuario: Usuario = Depends(usuario_actual), db: Session = Depends(get_db)) -> list[dict]:
+           protocolo_id: str | None = None, categoria_id: str | None = None, seccion: str | None = None,
+           q: str | None = None, usuario: Usuario = Depends(requiere_ver("DOCUMENTOS")), db: Session = Depends(get_db)) -> list[dict]:
     # Los documentos fijos no tienen protocolo: el filtro de protocolo no aplica
     docs = db.scalars(_consulta_documentos(db, usuario, empresa_id, unidad_id, None, categoria_id, seccion)).all()
     resultado = [_doc_dict(d) for d in docs]
@@ -121,15 +123,18 @@ def listar(empresa_id: int | None = None, unidad_id: int | None = None, temporad
 
 
 @router.get("/documentos/codigos")
-def codigos(usuario: Usuario = Depends(usuario_actual), db: Session = Depends(get_db)) -> dict[str, int]:
-    """Mapa código → id, para convertir en enlaces los códigos citados en observaciones (P OC CE 29, DPL 23)."""
+def codigos(usuario: Usuario = Depends(usuario_actual), db: Session = Depends(get_db)) -> dict[str, str]:
+    """Mapa código → id, para convertir en enlaces los códigos citados en observaciones (P OC CE 29, DPL 23).
+    Lo piden NC y auditorías: sin permiso de ver documentos queda vacío y los códigos se muestran como texto."""
+    if not puede_ver(usuario, "DOCUMENTOS"):
+        return {}
     docs = db.scalars(_consulta_documentos(db, usuario, None, None, None, None).where(Documento.codigo.is_not(None)))
     return {d.codigo: d.id for d in docs}
 
 
 @router.get("/documentos/exportar")
 def exportar(empresa_id: int | None = None, unidad_id: int | None = None, temporada_id: int | None = None,
-             protocolo_id: int | None = None, usuario: Usuario = Depends(usuario_actual),
+             protocolo_id: str | None = None, usuario: Usuario = Depends(requiere_ver("DOCUMENTOS")),
              db: Session = Depends(get_db)) -> StreamingResponse:
     docs = db.scalars(_consulta_documentos(db, usuario, empresa_id, unidad_id, None, None)).all()
     libro = Workbook()
@@ -152,7 +157,7 @@ def exportar(empresa_id: int | None = None, unidad_id: int | None = None, tempor
 
 
 @router.get("/documentos/{documento_id}")
-def detalle(documento_id: int, usuario: Usuario = Depends(usuario_actual), db: Session = Depends(get_db)) -> dict:
+def detalle(documento_id: str, usuario: Usuario = Depends(requiere_ver("DOCUMENTOS")), db: Session = Depends(get_db)) -> dict:
     doc = obtener(db, Documento, documento_id)
     _verificar_lectura(usuario, doc)
     return _doc_dict(doc, detalle=True)
@@ -175,7 +180,7 @@ def _validar_version(categoria: CategoriaDocumento, datos: VersionEntrada) -> No
         raise HTTPException(400, "El archivo no se subió correctamente")
 
 
-def _bitacora_cert(datos: VersionEntrada) -> dict:
+def _historial_cert(datos: VersionEntrada) -> dict:
     c = datos.certificado
     return {"certificado": c.numero, "vence": str(datos.fecha_vencimiento)} if c else {}
 
@@ -326,10 +331,36 @@ def analizar_subido(datos: ArchivoSubidoEntrada, _: Usuario = Depends(solo_certi
     }
 
 
+def _avisar_repetido(db: Session, nombre: str, documento: Documento | None = None, clave: str | None = None) -> None:
+    """Un archivo con el mismo nombre ya subido: se avisa antes de crear otro documento o versión."""
+    consulta = select(DocumentoVersion).where(DocumentoVersion.nombre_archivo == nombre)
+    if documento is not None:
+        consulta = consulta.where(DocumentoVersion.documento_id == documento.id)
+    repetidas = list(db.scalars(consulta))
+    if not repetidas and documento is not None and clave and documento.versiones:
+        # Mismo contenido con otro nombre: se compara con la versión vigente del documento
+        vigente = documento.versiones[-1]
+        try:
+            if vigente.archivo_key and hashlib.sha256(almacenamiento.leer(clave)).digest() == \
+                    hashlib.sha256(almacenamiento.leer(vigente.archivo_key)).digest():
+                repetidas = [vigente]
+        except Exception:  # noqa: BLE001 — si no se puede leer, no se bloquea la subida
+            pass
+    if repetidas:
+        raise error_duplicado(
+            "Ya hay un documento con un archivo de ese nombre." if documento is None
+            else "Este archivo ya está subido en este documento.",
+            [existente(v.nombre_archivo or "", v.subido_en, v.subido_por.nombre if v.subido_por else None,
+                       f"{v.documento.titulo} · versión {v.numero}") for v in repetidas],
+            "Crear el documento igual" if documento is None else "Subirlo igual como versión nueva")
+
+
 @router.post("/documentos", status_code=201)
-def crear(datos: DocumentoEntrada, usuario: Usuario = Depends(solo_certificaciones),
+def crear(datos: DocumentoEntrada, permitir_repetido: bool = False, usuario: Usuario = Depends(solo_certificaciones),
           db: Session = Depends(get_db)) -> dict:
     """Los documentos fijos los sube certificaciones; no van por sucursal sino por sección."""
+    if not permitir_repetido:
+        _avisar_repetido(db, datos.version.nombre_archivo)
     categoria = obtener(db, CategoriaDocumento, datos.categoria_id)
     if categoria.requiere_codigo and not datos.codigo:
         raise HTTPException(400, f"La categoría '{categoria.nombre}' exige código")
@@ -343,26 +374,28 @@ def crear(datos: DocumentoEntrada, usuario: Usuario = Depends(solo_certificacion
     db.flush()
     version = _nueva_version(db, doc, datos.version, usuario)
     registrar(db, usuario, "crear", "documento", doc.id, {"titulo": doc.titulo, "version": version.numero,
-                                                          "seccion": doc.seccion, **_bitacora_cert(datos.version)})
+                                                          "seccion": doc.seccion, **_historial_cert(datos.version)})
     db.commit()
     db.refresh(doc)
     return _doc_dict(doc, detalle=True)
 
 
 @router.post("/documentos/{documento_id}/versiones", status_code=201)
-def agregar_version(documento_id: int, datos: VersionEntrada, usuario: Usuario = Depends(solo_certificaciones),
-                    db: Session = Depends(get_db)) -> dict:
+def agregar_version(documento_id: str, datos: VersionEntrada, permitir_repetido: bool = False,
+                    usuario: Usuario = Depends(solo_certificaciones), db: Session = Depends(get_db)) -> dict:
     doc = obtener(db, Documento, documento_id)
+    if not permitir_repetido:
+        _avisar_repetido(db, datos.nombre_archivo, doc, datos.archivo_key)
     _validar_version(doc.categoria, datos)
     version = _nueva_version(db, doc, datos, usuario)
-    registrar(db, usuario, "nueva_version", "documento", doc.id, {"version": version.numero, **_bitacora_cert(datos)})
+    registrar(db, usuario, "nueva_version", "documento", doc.id, {"version": version.numero, **_historial_cert(datos)})
     db.commit()
     db.refresh(doc)
     return _doc_dict(doc, detalle=True)
 
 
 @router.patch("/documentos/{documento_id}")
-def modificar(documento_id: int, datos: DocumentoCambios, usuario: Usuario = Depends(solo_certificaciones),
+def modificar(documento_id: str, datos: DocumentoCambios, usuario: Usuario = Depends(solo_certificaciones),
               db: Session = Depends(get_db)) -> dict:
     doc = obtener(db, Documento, documento_id)
     cambios = datos.model_dump(exclude_unset=True)
@@ -376,7 +409,7 @@ def modificar(documento_id: int, datos: DocumentoCambios, usuario: Usuario = Dep
 
 
 @router.get("/documentos/versiones/{version_id}/descarga")
-def descargar(version_id: int, usuario: Usuario = Depends(usuario_actual), db: Session = Depends(get_db)) -> dict:
+def descargar(version_id: str, usuario: Usuario = Depends(requiere_ver("DOCUMENTOS")), db: Session = Depends(get_db)) -> dict:
     version = obtener(db, DocumentoVersion, version_id)
     _verificar_lectura(usuario, version.documento)
     if not version.archivo_key:
@@ -388,7 +421,7 @@ def descargar(version_id: int, usuario: Usuario = Depends(usuario_actual), db: S
 
 @router.get("/capacitaciones")
 def listar_capacitaciones(empresa_id: int | None = None, unidad_id: int | None = None,
-                          temporada_id: int | None = None, usuario: Usuario = Depends(usuario_actual),
+                          temporada_id: int | None = None, usuario: Usuario = Depends(requiere_ver("DOCUMENTOS")),
                           db: Session = Depends(get_db)) -> list[dict]:
     consulta = filtrar_unidades(select(Capacitacion), Capacitacion.unidad_id, usuario, empresa_id, unidad_id)
     consulta = filtrar_temporada(db, consulta, temporada_id, Capacitacion.fecha, Capacitacion.unidad_id)
@@ -403,6 +436,8 @@ def listar_capacitaciones(empresa_id: int | None = None, unidad_id: int | None =
 @router.post("/capacitaciones", status_code=201)
 def crear_capacitacion(datos: CapacitacionEntrada, usuario: Usuario = Depends(puede_escribir),
                        db: Session = Depends(get_db)) -> dict:
+    if not puede_ver(usuario, "DOCUMENTOS"):
+        raise HTTPException(403, "No tienes permiso para ver este módulo")
     verificar_unidad(usuario, datos.unidad_id)
     cap = Capacitacion(**datos.model_dump(), creado_por_id=usuario.id)
     db.add(cap)
@@ -415,7 +450,7 @@ def crear_capacitacion(datos: CapacitacionEntrada, usuario: Usuario = Depends(pu
 # ---------- Vencimientos ----------
 
 def calcular_vencimientos(db: Session, usuario: Usuario | None, empresa_id: int | None = None,
-                          unidad_id: int | None = None, protocolo_id: int | None = None) -> list[dict]:
+                          unidad_id: int | None = None, protocolo_id: str | None = None) -> list[dict]:
     """Vencimientos = certificados subidos como documentos fijos (categoría con fecha de vencimiento).
     Cuenta la fecha de la versión vigente; las capacitaciones ya no forman parte de este panel."""
     consulta = select(Documento).options(
@@ -448,8 +483,8 @@ def calcular_vencimientos(db: Session, usuario: Usuario | None, empresa_id: int 
 
 
 @router.get("/vencimientos")
-def vencimientos(empresa_id: int | None = None, unidad_id: int | None = None, protocolo_id: int | None = None,
-                 usuario: Usuario = Depends(usuario_actual), db: Session = Depends(get_db)) -> dict:
+def vencimientos(empresa_id: int | None = None, unidad_id: int | None = None, protocolo_id: str | None = None,
+                 usuario: Usuario = Depends(requiere_ver("DOCUMENTOS")), db: Session = Depends(get_db)) -> dict:
     items = calcular_vencimientos(db, usuario, empresa_id, unidad_id, protocolo_id)
     grupos = ["vencido"] + [str(d) for d in sorted(Config.DIAS_ALERTA)] + ["vigente"]
     return {"grupos": grupos, "items": items}

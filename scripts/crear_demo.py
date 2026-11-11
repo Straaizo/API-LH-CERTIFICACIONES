@@ -32,7 +32,7 @@ from sqlalchemy.orm import Session  # noqa: E402
 from utils import almacenamiento  # noqa: E402
 from utils.db import Base, SessionLocal, engine  # noqa: E402
 from utils.modelos import (  # noqa: E402
-    AccionCorrectiva, Analisis, App, Area, Auditoria, Bitacora, Capacitacion, CategoriaDocumento, Certificacion,
+    AccionCorrectiva, Analisis, App, Area, Auditoria, Historial, Capacitacion, CategoriaDocumento, Certificacion,
     ConceptoAmbiental, Documento, DocumentoVersion, Empresa, Especie, FactorEmision, FuenteAgua, LimiteParametro,
     NoConformidad, Permiso, PlantillaRegistro, Protocolo, Registro, RegistroAmbiental, Requisito, Respuesta,
     ResultadoAnalisis, SucursalTipo, Temporada, TipoAnalisis, Unidad, Usuario, VersionNorma, usuario_apps,
@@ -66,8 +66,11 @@ CLAVES_SUCURSAL = {
     "Campo Santa Inés": 106, "Campo Maitén Gigante": 107, "Campo Hospital": 108, "Packing Paine": 113,
     "Packing MG": 114, "Planta Chocalán": 118, "Campo Itahue": 201,
 }
-PERMISOS = ["CERTIFICACIONES_ADMIN", "REGISTROS_EDITAR", "NC_EDITAR", "LABORATORIO_EDITAR", "AMBIENTE_EDITAR",
-            "CERTIFICACIONES_VER"]
+PERMISOS = ["CERTIFICACIONES_ADMIN", "CERTIFICACIONES_VER", "CERTIFICACIONES_HISTORIAL",
+            "REGISTROS_VER", "REGISTROS_EDITAR", "NC_VER", "NC_EDITAR", "LABORATORIO_VER", "LABORATORIO_EDITAR",
+            "AMBIENTE_VER", "AMBIENTE_EDITAR", "AUDITORIAS_VER", "DOCUMENTOS_VER"]
+# Lo que ven los jefes además de lo que editan: auditorías y vencimientos en solo lectura
+VER_JEFES = ["AUDITORIAS_VER", "DOCUMENTOS_VER"]
 AREAS_PLANTA_CHOCALAN = ["Packing Unitec", "Packing cerezas", "Packing carozos", "Frío 1", "Frío 2", "Cámara 5",
                          "Zona sucia Unitec", "Patio", "Casino", "Baños", "Laboratorios", "Zona de desechos",
                          "Maestranza"]
@@ -81,14 +84,19 @@ PROTOCOLOS = [
     ("LEAF", "LEAF", "campo"), ("SPRING", "SPRING", "campo"), ("TESCO_NURTURE", "Tesco Nurture", "campo"),
     ("PRIMUSGFS", "PrimusGFS", "planta"), ("FSMA_PSR", "FSMA PSR", "campo"),
 ]
-# Normas de cada sucursal (certificaciones_pivot_sucursal_protocolo). Propuesta del 15 de octubre de 2026;
-# SMETA, Tesco TMPS, Walmart y GROW quedan sin sucursales hasta confirmarlo con Loreto
+# Normas de cada sucursal (certificaciones_pivot_sucursal_protocolo), confirmadas por certificaciones el 19 de octubre de 2026.
+# SMETA y Walmart aplican en todas las sucursales con normas; Tesco TMPS solo en los packings de Santa Victoria
+# y Maitén Gigante y en Planta Chocalán. GROW queda sin sucursales: se retoma esta temporada (pendiente).
 CAMPOS_NORMAS = [102, 103, 104, 105, 106, 107, 108, 201]
+PACKINGS_NORMAS = [113, 114, 118]
 NORMAS_POR_SUCURSAL = {
     "GLOBALGAP": CAMPOS_NORMAS, "GRASP": CAMPOS_NORMAS, "SPRING": CAMPOS_NORMAS, "TESCO_NURTURE": CAMPOS_NORMAS,
     "LEAF": CAMPOS_NORMAS, "FSMA_PSR": CAMPOS_NORMAS,
     "PRIMUSGFS": [113, 114],  # packing Santa Victoria (Paine) y Maitén Gigante
     "BRCGS": [118],
+    "SMETA": CAMPOS_NORMAS + PACKINGS_NORMAS,
+    "WALMART": CAMPOS_NORMAS + PACKINGS_NORMAS,
+    "TESCO_TMPS": PACKINGS_NORMAS,
 }
 SECCIONES_BRCGS_V9 = [
     ("1", "Compromiso del equipo directivo"), ("2", "Plan de inocuidad alimentaria: HACCP"),
@@ -116,7 +124,6 @@ TIPOS_ANALISIS = {
     "Suelo": (False, True, [("pH", "pH", 5.5, 8.0), ("Materia orgánica", "%", 2, None)]),
     "Hoja": (False, True, [("Nitrógeno", "%", 2.0, 3.2), ("Potasio", "%", 1.0, 2.0)]),
     "Fruta": (False, True, [("Calcio", "mg/100 g", 4, None)]),
-    "MRL": (False, False, [("Clorpirifos", "mg/kg", None, 0.01), ("Captan", "mg/kg", None, 3.0)]),
 }
 ESPECIES = ["Cerezo", "Ciruelo", "Duraznero", "Nectarino"]
 # Conceptos de medio ambiente: código, nombre, categoría, unidad, kg CO2e por unidad (valor referencial de demo)
@@ -188,7 +195,7 @@ def crear_generales(db: Session) -> dict[str, Unidad]:
                              inicio=date(anio, 5, 1) if con_fechas else None,
                              fin=date(anio + 1, 4, 30) if con_fechas else None))
             n += 1
-    db.add(App(id=Config.APP_ID, nombre="CERTIFICACIONES", descripcion="Certificaciones VS y LH"))
+    db.add(App(id=Config.APP_ID, nombre="CERTIFICACIONES", descripcion="Certificaciones LH y VS"))
     db.flush()
     for codigo in PERMISOS:
         db.add(Permiso(id=_id_corto("permiso", codigo), nombre=codigo, app_id=Config.APP_ID, id_estado=1))
@@ -256,14 +263,17 @@ def crear_catalogos(db: Session) -> dict:
 
     con_normas = sorted({i for ids in NORMAS_POR_SUCURSAL.values() for i in ids})
     usuarios = {
-        "cert": crear_usuario(db, "certificaciones", "Equipo Certificaciones", ["CERTIFICACIONES_ADMIN"], []),
-        "planta": crear_usuario(db, "planta", "Jefe de área · Planta Chocalán", ["REGISTROS_EDITAR", "NC_EDITAR"],
+        "cert": crear_usuario(db, "certificaciones", "Equipo Certificaciones", ["CERTIFICACIONES_ADMIN", "CERTIFICACIONES_HISTORIAL"], []),
+        "planta": crear_usuario(db, "planta", "Jefe de área · Planta Chocalán", ["REGISTROS_EDITAR", "NC_EDITAR", "LABORATORIO_VER", *VER_JEFES],
                                 [u["Planta Chocalán"]]),
         "campo": crear_usuario(db, "campo", "Jefe de campo · Chocalán e Itahue",
-                               ["REGISTROS_EDITAR", "NC_EDITAR", "LABORATORIO_EDITAR", "AMBIENTE_EDITAR"],
+                               ["REGISTROS_EDITAR", "NC_EDITAR", "LABORATORIO_EDITAR", "AMBIENTE_EDITAR", *VER_JEFES],
                                [u["Campo Chocalán"], u["Campo Itahue"]]),
-        "vs": crear_usuario(db, "vs", "Supervisor · VS Itahue", ["REGISTROS_EDITAR", "AMBIENTE_EDITAR"],
+        "vs": crear_usuario(db, "vs", "Supervisor · VS Itahue", ["REGISTROS_EDITAR", "AMBIENTE_EDITAR", *VER_JEFES],
                             [u["Campo Itahue"]]),
+        # Administrativa de campo: solo carga combustibles, no ve el resto de los módulos
+        "combustibles": crear_usuario(db, "combustibles", "Administrativa · combustibles Chocalán", ["AMBIENTE_EDITAR"],
+                                      [u["Campo Chocalán"]]),
         "auditor": crear_usuario(db, "auditor", "Auditor externo (solo lectura)", ["CERTIFICACIONES_VER"],
                                  [db.get(Unidad, i) for i in con_normas]),
     }
@@ -283,6 +293,33 @@ def importar_referencias(db: Session, cert: Usuario) -> None:
             continue
         print(f"  {r['protocolo']} {r['version']}: {r['puntos']} puntos ({r['nuevos']} nuevos), "
               f"{len(r['secciones'])} secciones, {len(r['advertencias'])} advertencias")
+    # ASOEX: la planilla general y las agendas por especie (los archivos repetidos se omiten)
+    from hashlib import md5 as _md5
+    from routers.laboratorio import guardar_asoex
+    vistos_asoex = set()
+    for ruta in sorted(Config.REFERENCIAS_DIR.glob("ASOEX/*.xlsx")):
+        contenido = ruta.read_bytes()
+        if _md5(contenido).hexdigest() in vistos_asoex:
+            continue
+        vistos_asoex.add(_md5(contenido).hexdigest())
+        carga = guardar_asoex(db, contenido, ruta.name, cert)
+        print(f"  ASOEX {ruta.name}: {', '.join(carga.resumen)} ({carga.fecha})")
+    # Carta de mercados de destino de GESEX (preselecciona los países por especie)
+    from routers.laboratorio import guardar_carta
+    for ruta in sorted(Config.REFERENCIAS_DIR.glob("Destino/*.pdf")):
+        carta = guardar_carta(db, ruta.read_bytes(), ruta.name, cert)
+        print(f"  Carta de destino {ruta.name}: {carta.temporada}, {', '.join(carta.destinos)}")
+    # Informes de auditorías externas (los duplicados exactos, como "..._1.pdf", se omiten)
+    from hashlib import md5
+    from routers.auditorias_externas import registrar_informe
+    vistos: set[str] = set()
+    for ruta in sorted(Config.REFERENCIAS_DIR.glob("Auditoria Externas/*.pdf")):
+        contenido = ruta.read_bytes()
+        if md5(contenido).hexdigest() in vistos:
+            continue
+        vistos.add(md5(contenido).hexdigest())
+        r = registrar_informe(db, contenido, ruta.name, cert)
+        print(f"  Auditoría externa: {r['titulo']} ({r['tipo_nombre']}, v{r['version']})")
     for ruta in sorted(Config.REFERENCIAS_DIR.glob("AI*.xlsx")):
         r = importar_brcgs(db, ruta.read_bytes(), ruta.name, cert, confirmar=True)
         for h in r["hojas"]:
@@ -355,7 +392,7 @@ def datos_ficticios(db: Session, ctx: dict) -> None:
 
     especies = {e.nombre: e for e in db.scalars(select(Especie))}
 
-    def analisis(tipo, unidad, dias, fuera=(), fuente=None, punto=None, por=cert, especie=None):
+    def analisis(tipo, unidad, dias, fuera=(), fuente=None, punto=None, por=cert, especie=None, valores=None):
         t = tipos[tipo]
         clave, nombre = archivo_demo("analisis", f"Informe {tipo} {unidad.nombre} {HOY + timedelta(days=dias)}")
         a = Analisis(tipo_analisis_id=t.id, unidad_id=unidad.id, fuente_agua_id=fuente.id if fuente else None,
@@ -364,7 +401,11 @@ def datos_ficticios(db: Session, ctx: dict) -> None:
                      archivo_key=clave,
                      nombre_archivo=nombre, creado_por_id=por.id)
         for lp in limites[t.id]:
-            if lp.parametro in fuera:
+            if valores is not None:
+                if lp.parametro not in valores:
+                    continue
+                valor = valores[lp.parametro]
+            elif lp.parametro in fuera:
                 valor = (lp.maximo or 0) * 2.4 + 1 if lp.maximo is not None else (lp.minimo or 0) * 0.5
             else:
                 bajo, alto = lp.minimo or 0, lp.maximo if lp.maximo is not None else (lp.minimo or 1) * 2
@@ -383,7 +424,6 @@ def datos_ficticios(db: Session, ctx: dict) -> None:
     analisis("Hoja", u["Campo Maitén Gigante"], -60, punto="Cuartel 1 (ficticio)", especie="Duraznero")
     analisis("Hoja", u["Campo Itahue"], -45, fuera=("Nitrógeno",), punto="Cuartel 3 (ficticio)", especie="Nectarino")
     analisis("Fruta", u["Campo Chocalán"], -25, punto="Cuartel 1 (ficticio)", especie="Ciruelo")
-    analisis("MRL", u["Campo Chocalán"], -200, punto="Lote cerezas")
 
     # Medio ambiente: temporada anterior completa y la actual hasta el mes pasado (datos FICTICIOS).
     # Estacionalidad agrícola (temporada mayo-abril) y una tendencia mixta para que la comparación muestre algo:
@@ -541,7 +581,7 @@ def demo_auditorias(db: Session, ctx: dict) -> None:
                                 "(texto ficticio).") if enviado else None
         nc.plan_por_id, nc.plan_en = us["planta"].id, ahora() - timedelta(days=2)
         if enviado:
-            # Loreto revisó y no quedó conforme: se la devolvió al jefe de área (1 reincidencia)
+            # Certificaciones revisó y no quedó conforme: se la devolvió al jefe de área (1 reincidencia)
             nc.estado = "en_proceso"
             nc.reincidencias = 1
             nc.revisiones = [{"fecha": (ahora() - timedelta(hours=20)).isoformat(timespec="minutes"),
@@ -593,6 +633,41 @@ def demo_auditorias(db: Session, ctx: dict) -> None:
 
     for nc in db.scalars(select(NoConformidad)):
         recalcular_reincidencias(db, nc.requisito_id, nc.unidad_id)
+    db.commit()
+
+
+def demo_internas_ejemplo(db: Session) -> None:
+    """Auditorías internas de ejemplo con otros checklist, para que certificaciones pruebe el flujo completo."""
+    t_actual = temporada_de(db, HOY)
+    ejemplos = [
+        # (norma, sucursal, nombre a mostrar, días desde hoy, duración, estado, secciones respondidas)
+        ("PRIMUSGFS", "PACKING MG", "Packing MG", -2, 5, "en_curso", ("1.01", "1.02")),
+        ("GRASP", "SANTA VICTORIA", "Santa Victoria", 0, 3, "en_curso", ()),
+        ("TESCO_NURTURE", "SAN MANUEL", "San Manuel", 30, 2, "planificada", ()),
+    ]
+    for codigo, sucursal, mostrar, desde, dias, estado, respondidas in ejemplos:
+        version = db.scalar(select(VersionNorma).join(Protocolo)
+                            .where(Protocolo.codigo == codigo, VersionNorma.vigente.is_(True)))
+        unidad = db.scalar(select(Unidad).where(Unidad.nombre == sucursal))
+        if version is None or unidad is None:
+            continue
+        titulo = f"Auditoría interna {version.protocolo.nombre} {t_actual.nombre} · {mostrar}"
+        if db.scalar(select(Auditoria).where(Auditoria.titulo == titulo)):
+            continue
+        inicio = HOY + timedelta(days=desde)
+        aud = Auditoria(version_id=version.id, unidad_id=unidad.id, fecha=inicio, fecha_fin=inicio + timedelta(days=dias),
+                        titulo=titulo, auditor="Equipo Certificaciones", secciones=[], estado=estado, origen="app")
+        db.add(aud)
+        db.flush()
+        reqs = [r for r in version.requisitos if r.seccion in respondidas]
+        for n, req in enumerate(reqs):
+            resultado = "no" if n in (2, 7) else ("na" if n % 6 == 5 else "si")
+            resp = Respuesta(auditoria_id=aud.id, requisito_id=req.id, resultado=resultado,
+                             comentario="Hallazgo de ejemplo (ficticio)" if resultado == "no" else None)
+            db.add(resp)
+            db.flush()
+            sincronizar_nc(db, aud, resp)
+        print(f"  Auditoría interna de ejemplo: {titulo} ({estado}, {len(reqs)} respuestas)")
     db.commit()
 
 
@@ -739,7 +814,7 @@ def datos_registros(db: Session, ctx: dict) -> None:
         if estado == "rechazado":
             eventos.append((cert, "rechazar", {"observacion": observacion}, 1))
         for autor, accion, detalle, horas in eventos:
-            db.add(Bitacora(usuario_id=autor.id, accion=accion, entidad="registro", entidad_id=r.id,
+            db.add(Historial(usuario_id=autor.id, accion=accion, entidad="registro", entidad_id=r.id,
                             detalle=detalle, fecha_hora=momento - timedelta(hours=horas)))
 
     cc, ci = u["Campo Chocalán"], u["Campo Itahue"]
@@ -755,7 +830,7 @@ def datos_registros(db: Session, ctx: dict) -> None:
 
 
 def main() -> None:
-    print(f"Base demo: {Config.url_base_datos()}")
+    print(f"Base demo: {engine.url.database}")
     # Se parte de un archivo nuevo: drop_all falla si la base trae un esquema anterior
     engine.dispose()
     Path(engine.url.database).unlink(missing_ok=True)
@@ -770,6 +845,7 @@ def main() -> None:
         datos_ficticios(db, ctx)
         datos_registros(db, ctx)
         demo_auditorias(db, ctx)
+        demo_internas_ejemplo(db)
         reinc = db.scalars(select(NoConformidad).where(NoConformidad.reincidente_de_id.is_not(None))).all()
         print("Reincidentes:", sorted({nc.requisito.codigo for nc in reinc}))
     print("Listo.")

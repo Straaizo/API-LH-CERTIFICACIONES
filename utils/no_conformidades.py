@@ -4,12 +4,12 @@ from sqlalchemy.orm import Session
 from utils.modelos import Auditoria, NoConformidad, Respuesta
 
 
-def recalcular_reincidencias(db: Session, requisito_id: int, unidad_id: int) -> None:
+def recalcular_reincidencias(db: Session, requisito_id: str, unidad_id: int) -> None:
     """Enlaza cada NC de un requisito y unidad con la NC anterior de una auditoría previa."""
     ncs = db.scalars(
         select(NoConformidad)
         .where(NoConformidad.requisito_id == requisito_id, NoConformidad.unidad_id == unidad_id)
-        .order_by(NoConformidad.fecha_deteccion, NoConformidad.id)
+        .order_by(NoConformidad.fecha_deteccion, NoConformidad.created_at)
     ).all()
     anterior: NoConformidad | None = None
     for nc in ncs:

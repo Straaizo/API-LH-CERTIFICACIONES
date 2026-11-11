@@ -19,4 +19,5 @@ EXPOSE 8080
 
 # Cloud Run entrega el puerto en $PORT
 # En la demo publicada, primero copia la base y los archivos de partida (ver scripts/cargar_semilla.py)
-CMD python scripts/cargar_semilla.py && exec uvicorn main:app --host 0.0.0.0 --port ${PORT:-8080} --workers 1
+# --no-server-header: no anunciar que es uvicorn (menos pistas para un atacante)
+CMD python scripts/cargar_semilla.py && exec uvicorn main:app --host 0.0.0.0 --port ${PORT:-8080} --workers 1 --no-server-header

@@ -2,7 +2,8 @@
 
 Usuarios, acceso a la aplicación, permisos y sucursales vienen del portal web (tablas compartidas):
 - acceso: usuario_pivot_app_usuario con id_app = Config.APP_ID
-- permisos: usuario_dim_permiso de esa app (CERTIFICACIONES_ADMIN, REGISTROS_EDITAR, ..., CERTIFICACIONES_VER)
+- permisos: usuario_dim_permiso de esa app (CERTIFICACIONES_ADMIN, REGISTROS_EDITAR, ..., CERTIFICACIONES_VER,
+  CERTIFICACIONES_HISTORIAL)
 - sucursales: usuario_pivot_sucursal_usuario (el administrador ve todas)
 """
 import hmac
@@ -16,13 +17,17 @@ from sqlalchemy.orm import Session, selectinload
 
 from config import Config
 from utils.db import get_db
-from utils.modelos import PERMISO_ADMIN, Usuario
+from utils.modelos import PERMISO_ADMIN, PERMISO_HISTORIAL, PERMISO_VER, Usuario
 
 # Permisos de edición por módulo (además, CERTIFICACIONES_ADMIN puede todo)
 REGISTROS = "REGISTROS_EDITAR"
 NC = "NC_EDITAR"
 LABORATORIO = "LABORATORIO_EDITAR"
 AMBIENTE = "AMBIENTE_EDITAR"
+
+# Módulos que se ven por permiso: <MODULO>_VER o <MODULO>_EDITAR (editar incluye ver).
+# CERTIFICACIONES_ADMIN y CERTIFICACIONES_VER (solo lectura, auditores) ven todos.
+MODULOS = ("REGISTROS", "DOCUMENTOS", "LABORATORIO", "AUDITORIAS", "NC", "AMBIENTE")
 
 _HASH_FICTICIO = bcrypt.hashpw(b"marcador-tiempo-constante", bcrypt.gensalt(rounds=12))
 
@@ -31,13 +36,19 @@ _HASH_FICTICIO = bcrypt.hashpw(b"marcador-tiempo-constante", bcrypt.gensalt(roun
 
 
 def verificar_clave(clave: str, guardada: str | None) -> bool:
-    """bcrypt, como LH Inventario. Si el usuario no existe igual se calcula un hash (tiempo constante)."""
+    """bcrypt, como LH Inventario. Si el usuario no existe igual se calcula un hash (tiempo constante).
+
+    bcrypt solo usa los primeros 72 bytes: se recortan siempre igual, para que una clave larga no falle distinto
+    (ni más rápido) según exista o no el usuario.
+    """
+    entrada = clave.encode()[:72]
     if not guardada or not guardada.startswith(("$2a$", "$2b$", "$2y$")):
-        bcrypt.checkpw(clave.encode(), _HASH_FICTICIO)
+        bcrypt.checkpw(entrada, _HASH_FICTICIO)
         return False
     try:
-        return bcrypt.checkpw(clave.encode(), guardada.encode())
+        return bcrypt.checkpw(entrada, guardada.encode())
     except ValueError:
+        bcrypt.checkpw(entrada, _HASH_FICTICIO)
         return False
 
 
@@ -107,7 +118,10 @@ def usuario_actual(
         if not authorization or not authorization.lower().startswith("bearer "):
             raise HTTPException(401, "Falta el token")
         usuario_id = leer_token(authorization.split(" ", 1)[1].strip(), "access")
-    return validar_acceso(cargar_usuario(db, usuario_id))
+    usuario = validar_acceso(cargar_usuario(db, usuario_id))
+    # created_by / updated_by de lo que se guarde en esta petición (ver modelos._auditar)
+    db.info["usuario_id"] = usuario.id
+    return usuario
 
 
 def es_certificaciones(usuario: Usuario) -> bool:
@@ -119,9 +133,37 @@ def tiene_permiso(usuario: Usuario, permiso: str) -> bool:
     return PERMISO_ADMIN in codigos or permiso in codigos
 
 
+def puede_ver(usuario: Usuario, modulo: str) -> bool:
+    codigos = usuario.codigos_permiso
+    return bool(codigos & {PERMISO_ADMIN, PERMISO_VER, f"{modulo}_VER", f"{modulo}_EDITAR"})
+
+
+def ve_todo(usuario: Usuario) -> bool:
+    return bool(usuario.codigos_permiso & {PERMISO_ADMIN, PERMISO_VER})
+
+
+def modulos_visibles(usuario: Usuario) -> list[str]:
+    return [m for m in MODULOS if puede_ver(usuario, m)]
+
+
+def requiere_ver(*modulos: str):
+    """Dependencia: el usuario puede ver todos los módulos indicados (permiso _VER o _EDITAR, o ve todo)."""
+    def dependencia(usuario: Usuario = Depends(usuario_actual)) -> Usuario:
+        if not all(puede_ver(usuario, m) for m in modulos):
+            raise HTTPException(403, "No tienes permiso para ver este módulo")
+        return usuario
+    return dependencia
+
+
 def solo_certificaciones(usuario: Usuario = Depends(usuario_actual)) -> Usuario:
     if not es_certificaciones(usuario):
         raise HTTPException(403, "Solo el equipo de certificaciones puede hacer esto")
+    return usuario
+
+
+def solo_historial(usuario: Usuario = Depends(usuario_actual)) -> Usuario:
+    if PERMISO_HISTORIAL not in usuario.codigos_permiso:
+        raise HTTPException(403, "No tienes permiso para ver el historial de cambios")
     return usuario
 
 

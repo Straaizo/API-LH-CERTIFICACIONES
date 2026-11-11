@@ -6,8 +6,8 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
 from utils import almacenamiento
-from utils.auth import NC, es_certificaciones, requiere_permiso, solo_certificaciones, usuario_actual, verificar_unidad
-from utils.bitacora import registrar
+from utils.auth import NC, es_certificaciones, requiere_permiso, requiere_ver, solo_certificaciones, verificar_unidad
+from utils.historial import registrar
 from utils.comunes import filtrar_temporada, filtrar_unidades, obtener, unidad_dict
 from utils.db import get_db
 from utils.modelos import AccionCorrectiva, Auditoria, NoConformidad, Usuario, VersionNorma
@@ -34,7 +34,7 @@ class NcCambios(BaseModel):
     clasificacion: str | None = None
     responsable_id: str | None = None
     plazo: date | None = None
-    area_id: int | None = None
+    area_id: str | None = None
     estado: str | None = None
 
 
@@ -102,9 +102,9 @@ def _nc_dict(nc: NoConformidad, detalle: bool = False) -> dict:
 
 @router.get("")
 def listar(empresa_id: int | None = None, unidad_id: int | None = None, temporada_id: int | None = None,
-           protocolo_id: int | None = None, estado: str | None = None, solo_reincidentes: bool = False,
+           protocolo_id: str | None = None, estado: str | None = None, solo_reincidentes: bool = False,
            solo_repetidas: bool = False,
-           responsable_id: str | None = None, usuario: Usuario = Depends(usuario_actual),
+           responsable_id: str | None = None, usuario: Usuario = Depends(requiere_ver("NC")),
            db: Session = Depends(get_db)) -> list[dict]:
     consulta = filtrar_unidades(
         select(NoConformidad).join(Auditoria).options(selectinload(NoConformidad.acciones)),
@@ -130,7 +130,7 @@ def listar(empresa_id: int | None = None, unidad_id: int | None = None, temporad
 
 
 @router.get("/{nc_id}")
-def detalle(nc_id: int, usuario: Usuario = Depends(usuario_actual), db: Session = Depends(get_db)) -> dict:
+def detalle(nc_id: str, usuario: Usuario = Depends(requiere_ver("NC")), db: Session = Depends(get_db)) -> dict:
     nc = obtener(db, NoConformidad, nc_id)
     verificar_unidad(usuario, nc.unidad_id)
     if not es_certificaciones(usuario) and not nc.auditoria.emitida_en:
@@ -139,7 +139,7 @@ def detalle(nc_id: int, usuario: Usuario = Depends(usuario_actual), db: Session 
 
 
 @router.put("/{nc_id}/plan")
-def guardar_plan(nc_id: int, datos: PlanAccion, usuario: Usuario = Depends(requiere_permiso(NC)),
+def guardar_plan(nc_id: str, datos: PlanAccion, usuario: Usuario = Depends(requiere_permiso(NC)),
                  db: Session = Depends(get_db)) -> dict:
     """El jefe de área registra el análisis de causa raíz y las acciones. Puede guardar y seguir después;
     al enviar quedan para revisión de certificaciones."""
@@ -178,7 +178,7 @@ def guardar_plan(nc_id: int, datos: PlanAccion, usuario: Usuario = Depends(requi
 
 
 @router.patch("/{nc_id}")
-def modificar(nc_id: int, datos: NcCambios, usuario: Usuario = Depends(solo_certificaciones),
+def modificar(nc_id: str, datos: NcCambios, usuario: Usuario = Depends(solo_certificaciones),
               db: Session = Depends(get_db)) -> dict:
     nc = obtener(db, NoConformidad, nc_id)
     cambios = datos.model_dump(exclude_unset=True)
@@ -200,7 +200,7 @@ def modificar(nc_id: int, datos: NcCambios, usuario: Usuario = Depends(solo_cert
 
 
 @router.post("/{nc_id}/acciones", status_code=201)
-def agregar_accion(nc_id: int, datos: AccionEntrada, usuario: Usuario = Depends(requiere_permiso(NC)),
+def agregar_accion(nc_id: str, datos: AccionEntrada, usuario: Usuario = Depends(requiere_permiso(NC)),
                    db: Session = Depends(get_db)) -> dict:
     nc = obtener(db, NoConformidad, nc_id)
     verificar_unidad(usuario, nc.unidad_id)
@@ -229,7 +229,7 @@ def _revision(nc: NoConformidad, usuario: Usuario, cumple: bool, observacion: st
 
 
 @router.post("/{nc_id}/revision")
-def revisar(nc_id: int, datos: Revision, usuario: Usuario = Depends(solo_certificaciones),
+def revisar(nc_id: str, datos: Revision, usuario: Usuario = Depends(solo_certificaciones),
             db: Session = Depends(get_db)) -> dict:
     """Certificaciones revisa el plan y la evidencia del jefe de área.
     Cumple: se cierra (exige evidencia). No cumple: vuelve al jefe de área y cuenta como reincidencia."""
@@ -260,7 +260,7 @@ def revisar(nc_id: int, datos: Revision, usuario: Usuario = Depends(solo_certifi
 
 
 @router.post("/{nc_id}/cerrar")
-def cerrar(nc_id: int, usuario: Usuario = Depends(solo_certificaciones), db: Session = Depends(get_db)) -> dict:
+def cerrar(nc_id: str, usuario: Usuario = Depends(solo_certificaciones), db: Session = Depends(get_db)) -> dict:
     nc = obtener(db, NoConformidad, nc_id)
     if nc.estado == "cerrada":
         raise HTTPException(400, "Ya está cerrada")
@@ -275,7 +275,7 @@ def cerrar(nc_id: int, usuario: Usuario = Depends(solo_certificaciones), db: Ses
 
 
 @router.get("/acciones/{accion_id}/evidencia")
-def evidencia(accion_id: int, usuario: Usuario = Depends(usuario_actual), db: Session = Depends(get_db)) -> dict:
+def evidencia(accion_id: str, usuario: Usuario = Depends(requiere_ver("NC")), db: Session = Depends(get_db)) -> dict:
     accion = obtener(db, AccionCorrectiva, accion_id)
     verificar_unidad(usuario, accion.no_conformidad.unidad_id)
     if not accion.archivo_key:

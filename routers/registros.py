@@ -1,4 +1,5 @@
 """Registros: documentos no fijos que certificaciones define como plantilla y los encargados llenan en la app."""
+import logging
 import re
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
@@ -9,15 +10,15 @@ from sqlalchemy.orm import Session
 
 from utils import almacenamiento
 from utils.auth import (
-    REGISTROS, es_certificaciones, requiere_permiso, solo_certificaciones, usuario_actual, verificar_unidad,
+    REGISTROS, es_certificaciones, requiere_permiso, requiere_ver, solo_certificaciones, verificar_unidad,
 )
-from utils.bitacora import registrar
+from utils.historial import registrar
 from utils.comunes import filtrar_temporada, filtrar_unidades, obtener, unidad_dict
 from utils.db import get_db
 from utils.exportar_registro import a_pdf, a_word
 from utils.importar_plantilla_word import leer_plantilla_word
 from utils.rellenar_word import rellenar_word
-from utils.modelos import Bitacora, PlantillaRegistro, Registro, Unidad, Usuario
+from utils.modelos import Historial, PlantillaRegistro, Registro, Unidad, Usuario
 from utils.texto import nombre_archivo_seguro
 from utils.hora import ahora
 
@@ -66,7 +67,7 @@ class CampoPlantilla(BaseModel):
 class PlantillaEntrada(BaseModel):
     codigo: str | None = Field(default=None, max_length=40)
     version: str = Field(default="01", max_length=10)
-    nombre: str = Field(min_length=2, max_length=200)
+    nombre: str = Field(min_length=2, max_length=120)
     descripcion: str | None = None
     ambito: str = "campo"
     # encargado, frecuencia, orientacion (vertical|horizontal), creado_por, aprobado_por, fecha_revision,
@@ -77,7 +78,7 @@ class PlantillaEntrada(BaseModel):
 
 
 class RegistroEntrada(BaseModel):
-    plantilla_id: int
+    plantilla_id: str
     unidad_id: int
     titulo: str = Field(min_length=2, max_length=250)
     responsable_id: str | None = None
@@ -168,7 +169,7 @@ def _plantilla_dict(p: PlantillaRegistro) -> dict:
             "creada_en": p.creada_en}
 
 
-def _codigo_libre(db: Session, codigo: str | None, plantilla_id: int | None = None) -> str | None:
+def _codigo_libre(db: Session, codigo: str | None, plantilla_id: str | None = None) -> str | None:
     codigo = codigo.strip().upper() if codigo and codigo.strip() else None
     if codigo:
         otra = db.scalar(select(PlantillaRegistro).where(PlantillaRegistro.codigo == codigo))
@@ -267,7 +268,7 @@ def _resumen_cambios(campos: list[dict], antes: dict, despues: dict, autor: str,
 # ---------- Plantillas (solo certificaciones) ----------
 
 @router.get("/plantillas")
-def listar_plantillas(solo_activas: bool = False, _: Usuario = Depends(usuario_actual),
+def listar_plantillas(solo_activas: bool = False, _: Usuario = Depends(requiere_ver("REGISTROS")),
                       db: Session = Depends(get_db)) -> list[dict]:
     consulta = select(PlantillaRegistro).order_by(PlantillaRegistro.codigo, PlantillaRegistro.nombre)
     if solo_activas:
@@ -291,7 +292,7 @@ def crear_plantilla(datos: PlantillaEntrada, usuario: Usuario = Depends(solo_cer
 
 
 @router.put("/plantillas/{plantilla_id}")
-def modificar_plantilla(plantilla_id: int, datos: PlantillaEntrada, usuario: Usuario = Depends(solo_certificaciones),
+def modificar_plantilla(plantilla_id: str, datos: PlantillaEntrada, usuario: Usuario = Depends(solo_certificaciones),
                         db: Session = Depends(get_db)) -> dict:
     """Los registros ya generados conservan su copia de los campos."""
     plantilla = obtener(db, PlantillaRegistro, plantilla_id)
@@ -368,7 +369,7 @@ def crear_plantilla_desde_word(db: Session, contenido: bytes, nombre_archivo: st
 
 
 @router.get("/plantillas/{plantilla_id}/logo")
-def logo_plantilla(plantilla_id: int, _: Usuario = Depends(usuario_actual), db: Session = Depends(get_db)) -> dict:
+def logo_plantilla(plantilla_id: str, _: Usuario = Depends(requiere_ver("REGISTROS")), db: Session = Depends(get_db)) -> dict:
     clave = (obtener(db, PlantillaRegistro, plantilla_id).formato or {}).get("logo_clave")
     if not clave:
         raise HTTPException(404, "La plantilla no tiene logo")
@@ -379,7 +380,7 @@ def logo_plantilla(plantilla_id: int, _: Usuario = Depends(usuario_actual), db: 
 
 @router.get("")
 def listar(empresa_id: int | None = None, unidad_id: int | None = None, temporada_id: int | None = None,
-           estado: str | None = None, plantilla_id: int | None = None, usuario: Usuario = Depends(usuario_actual),
+           estado: str | None = None, plantilla_id: str | None = None, usuario: Usuario = Depends(requiere_ver("REGISTROS")),
            db: Session = Depends(get_db)) -> list[dict]:
     consulta = filtrar_unidades(select(Registro), Registro.unidad_id, usuario, empresa_id, unidad_id)
     consulta = filtrar_temporada(db, consulta, temporada_id, func.date(Registro.creado_en), Registro.unidad_id)
@@ -414,7 +415,7 @@ def crear(datos: RegistroEntrada, usuario: Usuario = Depends(solo_certificacione
     return _registro_dict(registro, detalle=True)
 
 
-def _evento_dict(b: Bitacora, registros: dict[int, Registro] | None = None) -> dict:
+def _evento_dict(b: Historial, registros: dict[str, Registro] | None = None) -> dict:
     datos = {"id": b.id, "fecha_hora": b.fecha_hora, "usuario": b.usuario.nombre if b.usuario else "Sistema",
              "accion": b.accion, "detalle": b.detalle or {}, "registro_id": b.entidad_id}
     if registros is not None and b.entidad_id in registros:
@@ -425,32 +426,32 @@ def _evento_dict(b: Bitacora, registros: dict[int, Registro] | None = None) -> d
 
 
 @router.get("/actividad")
-def actividad(limite: int = 30, usuario: Usuario = Depends(usuario_actual), db: Session = Depends(get_db)) -> list[dict]:
+def actividad(limite: int = 30, usuario: Usuario = Depends(requiere_ver("REGISTROS")), db: Session = Depends(get_db)) -> list[dict]:
     """Últimos cambios en registros: quién guardó, envió o revisó y cuándo."""
     visibles = {r.id: r for r in db.scalars(filtrar_unidades(select(Registro), Registro.unidad_id, usuario))}
-    eventos = db.scalars(select(Bitacora).where(Bitacora.entidad == "registro", Bitacora.entidad_id.in_(visibles))
-                         .order_by(Bitacora.fecha_hora.desc(), Bitacora.id.desc()).limit(min(limite, 200)))
+    eventos = db.scalars(select(Historial).where(Historial.entidad == "registro", Historial.entidad_id.in_(visibles))
+                         .order_by(Historial.fecha_hora.desc(), Historial.id.desc()).limit(min(limite, 200)))
     return [_evento_dict(b, visibles) for b in eventos]
 
 
 @router.get("/{registro_id}/historial")
-def historial(registro_id: int, usuario: Usuario = Depends(usuario_actual), db: Session = Depends(get_db)) -> list[dict]:
+def historial(registro_id: str, usuario: Usuario = Depends(requiere_ver("REGISTROS")), db: Session = Depends(get_db)) -> list[dict]:
     registro = obtener(db, Registro, registro_id)
     verificar_unidad(usuario, registro.unidad_id)
-    eventos = db.scalars(select(Bitacora).where(Bitacora.entidad == "registro", Bitacora.entidad_id == registro.id)
-                         .order_by(Bitacora.fecha_hora.desc(), Bitacora.id.desc()))
+    eventos = db.scalars(select(Historial).where(Historial.entidad == "registro", Historial.entidad_id == registro.id)
+                         .order_by(Historial.fecha_hora.desc(), Historial.id.desc()))
     return [_evento_dict(b) for b in eventos]
 
 
 @router.get("/{registro_id}")
-def detalle(registro_id: int, usuario: Usuario = Depends(usuario_actual), db: Session = Depends(get_db)) -> dict:
+def detalle(registro_id: str, usuario: Usuario = Depends(requiere_ver("REGISTROS")), db: Session = Depends(get_db)) -> dict:
     registro = obtener(db, Registro, registro_id)
     verificar_unidad(usuario, registro.unidad_id)
     return _registro_dict(registro, detalle=True)
 
 
 @router.put("/{registro_id}/valores")
-def guardar_valores(registro_id: int, valores: dict, usuario: Usuario = Depends(requiere_permiso(REGISTROS)),
+def guardar_valores(registro_id: str, valores: dict, usuario: Usuario = Depends(requiere_permiso(REGISTROS)),
                     db: Session = Depends(get_db)) -> dict:
     """Guarda lo llenado (parcial o completo). Solo en borrador o rechazado."""
     registro = obtener(db, Registro, registro_id)
@@ -493,7 +494,7 @@ def guardar_valores(registro_id: int, valores: dict, usuario: Usuario = Depends(
 
 
 @router.post("/{registro_id}/enviar")
-def enviar(registro_id: int, usuario: Usuario = Depends(requiere_permiso(REGISTROS)),
+def enviar(registro_id: str, usuario: Usuario = Depends(requiere_permiso(REGISTROS)),
            db: Session = Depends(get_db)) -> dict:
     registro = obtener(db, Registro, registro_id)
     _puede_llenar(usuario, registro)
@@ -512,7 +513,7 @@ def enviar(registro_id: int, usuario: Usuario = Depends(requiere_permiso(REGISTR
 
 
 @router.post("/{registro_id}/revision")
-def revisar(registro_id: int, datos: Revision, usuario: Usuario = Depends(solo_certificaciones),
+def revisar(registro_id: str, datos: Revision, usuario: Usuario = Depends(solo_certificaciones),
             db: Session = Depends(get_db)) -> dict:
     registro = obtener(db, Registro, registro_id)
     if registro.estado != "en_revision":
@@ -531,7 +532,7 @@ def revisar(registro_id: int, datos: Revision, usuario: Usuario = Depends(solo_c
 
 
 @router.get("/{registro_id}/exportar")
-def exportar(registro_id: int, formato: str = "pdf", usuario: Usuario = Depends(usuario_actual),
+def exportar(registro_id: str, formato: str = "pdf", usuario: Usuario = Depends(requiere_ver("REGISTROS")),
              db: Session = Depends(get_db)) -> Response:
     registro = obtener(db, Registro, registro_id)
     verificar_unidad(usuario, registro.unidad_id)
@@ -551,13 +552,15 @@ def exportar(registro_id: int, formato: str = "pdf", usuario: Usuario = Depends(
     except HTTPException:
         raise
     except Exception as exc:
-        raise HTTPException(500, f"No se pudo generar el archivo: {exc}") from exc
+        # El detalle queda en el registro del servidor; al navegador no se le muestran rutas ni trazas internas
+        logging.getLogger(__name__).exception("No se pudo generar el archivo")
+        raise HTTPException(500, "No se pudo generar el archivo") from exc
     return Response(contenido, media_type=tipo,
                     headers={"Content-Disposition": f'attachment; filename="{nombre}.{formato}"'})
 
 
 @router.get("/{registro_id}/archivo/{campo_id}")
-def ver_archivo(registro_id: int, campo_id: str, usuario: Usuario = Depends(usuario_actual),
+def ver_archivo(registro_id: str, campo_id: str, usuario: Usuario = Depends(requiere_ver("REGISTROS")),
                 db: Session = Depends(get_db)) -> dict:
     registro = obtener(db, Registro, registro_id)
     verificar_unidad(usuario, registro.unidad_id)

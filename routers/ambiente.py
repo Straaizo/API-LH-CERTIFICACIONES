@@ -1,15 +1,17 @@
 from datetime import date
 
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import Response
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
-from utils.auth import AMBIENTE, requiere_permiso, solo_certificaciones, usuario_actual, verificar_unidad
-from utils.bitacora import registrar
+from utils.auth import AMBIENTE, requiere_permiso, requiere_ver, solo_certificaciones, usuario_actual, ve_todo, verificar_unidad
+from utils.historial import registrar
 from utils.comunes import filtrar_temporada, filtrar_unidades, obtener, unidad_dict
 from utils.db import get_db
-from utils.modelos import ConceptoAmbiental, FactorEmision, RegistroAmbiental, Unidad, Usuario
+from utils.informe_ambiente import informe_pdf
+from utils.modelos import ConceptoAmbiental, Empresa, FactorEmision, RegistroAmbiental, Unidad, Usuario
 from utils.temporadas import (
     TemporadaLogica, buscar_temporada, en_temporada, listar_temporadas, obtener_temporada, temporada_actual,
     temporada_anterior, temporada_para_fecha,
@@ -33,12 +35,13 @@ class ConsumoEntrada(BaseModel):
 class ReciclajeEntrada(BaseModel):
     unidad_id: int
     fecha: date
-    material_id: int  # concepto de categoría reciclaje
+    material_id: str  # concepto de categoría reciclaje
     kilos: float = Field(gt=0)
 
 
 def no_encargado(usuario: Usuario = Depends(usuario_actual)) -> Usuario:
-    if usuario.rol == "encargado":
+    # Huella, factores y reciclaje: solo quien ve todo (certificaciones o lectura total), no los encargados
+    if not ve_todo(usuario):
         raise HTTPException(403, "Los encargados solo ven los consumos de combustible")
     return usuario
 
@@ -47,7 +50,7 @@ def _conceptos_consumo(db: Session, usuario: Usuario) -> list[ConceptoAmbiental]
     consulta = select(ConceptoAmbiental).where(ConceptoAmbiental.categoria != RECICLAJE, ConceptoAmbiental.activo)
     if usuario.rol == "encargado":
         consulta = consulta.where(ConceptoAmbiental.categoria.in_(CATEGORIAS_ENCARGADO))
-    return list(db.scalars(consulta.order_by(ConceptoAmbiental.id)))
+    return list(db.scalars(consulta.order_by(ConceptoAmbiental.categoria, ConceptoAmbiental.nombre)))
 
 
 def _validar_fecha(db: Session, fecha: date, unidad_id: int) -> None:
@@ -66,7 +69,7 @@ def _registros(db: Session, usuario: Usuario, empresa_id, unidad_id, temporada_i
 
 
 @router.get("/conceptos")
-def conceptos(usuario: Usuario = Depends(usuario_actual), db: Session = Depends(get_db)) -> list[dict]:
+def conceptos(usuario: Usuario = Depends(requiere_ver("AMBIENTE")), db: Session = Depends(get_db)) -> list[dict]:
     return [{"codigo": c.codigo, "nombre": c.nombre, "unidad_medida": c.unidad_medida}
             for c in _conceptos_consumo(db, usuario)]
 
@@ -85,7 +88,7 @@ def factores(temporada_id: int | None = None, _: Usuario = Depends(no_encargado)
 
 @router.get("/consumos")
 def listar_consumos(empresa_id: int | None = None, unidad_id: int | None = None, temporada_id: int | None = None,
-                    usuario: Usuario = Depends(usuario_actual), db: Session = Depends(get_db)) -> list[dict]:
+                    usuario: Usuario = Depends(requiere_ver("AMBIENTE")), db: Session = Depends(get_db)) -> list[dict]:
     visibles = {c.id for c in _conceptos_consumo(db, usuario)}
     consulta = _registros(db, usuario, empresa_id, unidad_id, temporada_id, reciclaje=False)
     consulta = consulta.where(RegistroAmbiental.concepto_id.in_(visibles or {-1}))
@@ -136,7 +139,7 @@ def crear_reciclaje(datos: ReciclajeEntrada, usuario: Usuario = Depends(solo_cer
     return {"id": registro.id}
 
 
-def _factores(db: Session) -> dict[tuple[str, int], float]:
+def _factores(db: Session) -> dict[tuple[str, str], float]:
     """(nombre de temporada, concepto_id) -> kg CO2e por unidad del concepto."""
     return {(f.temporada, f.concepto_id): f.factor_kgco2e for f in db.scalars(select(FactorEmision))}
 
@@ -226,6 +229,36 @@ def comparativa(empresa_id: int | None = None, unidad_id: int | None = None, tem
                 db: Session = Depends(get_db)) -> dict:
     """Temporada elegida (o la actual) contra la anterior al mismo período: si la actual lleva 3 meses con
     datos, se compara con los mismos 3 meses de la anterior. Incluye la anterior completa y una proyección."""
+    return datos_comparativa(db, usuario, empresa_id, unidad_id, temporada_id, anterior_id)
+
+
+@router.get("/informe.pdf")
+def informe(empresa_id: int | None = None, unidad_id: int | None = None, temporada_id: int | None = None,
+            anterior_id: int | None = None, usuario: Usuario = Depends(requiere_ver("AMBIENTE")),
+            db: Session = Depends(get_db)) -> Response:
+    """Informe formal en PDF de la comparativa. Los encargados (administrativos, aplicaciones) reciben solo
+    combustibles, lo mismo que ven en pantalla."""
+    categorias = CATEGORIAS_ENCARGADO if usuario.rol == "encargado" else None
+    datos = datos_comparativa(db, usuario, empresa_id, unidad_id, temporada_id, anterior_id, categorias)
+    if unidad_id:
+        alcance = obtener(db, Unidad, unidad_id).etiqueta
+    elif empresa_id:
+        alcance = obtener(db, Empresa, empresa_id).nombre.title()
+    else:
+        alcance = "Todas las sucursales" if usuario.rol == "certificaciones" else "Mis sucursales"
+    contenido = informe_pdf(datos, alcance=alcance, solo_combustibles=categorias is not None,
+                            emitido_por=usuario.nombre or usuario.usuario)
+    nombre = f"Informe medio ambiente {datos['actual']['nombre']} {alcance}.pdf".replace("/", "-")
+    registrar(db, usuario, "descargar", "informe_ambiente", None, {"temporada": datos["actual"]["nombre"], "alcance": alcance})
+    db.commit()
+    return Response(contenido, media_type="application/pdf",
+                    headers={"Content-Disposition": f'attachment; filename="{nombre}"'})
+
+
+def datos_comparativa(db: Session, usuario: Usuario, empresa_id: int | None, unidad_id: int | None,
+                      temporada_id: int | None, anterior_id: int | None,
+                      categorias: tuple[str, ...] | None = None) -> dict:
+    """categorias: limita a esas categorías de concepto (los encargados ven solo combustibles)."""
     actual = buscar_temporada(db, temporada_id) if temporada_id else temporada_actual(db)
     if actual is None:
         raise HTTPException(404, "No hay una temporada para comparar")
@@ -242,6 +275,8 @@ def comparativa(empresa_id: int | None = None, unidad_id: int | None = None, tem
         if t is None:
             return []
         consulta = _registros(db, usuario, empresa_id, unidad_id, None, reciclaje)
+        if categorias:
+            consulta = consulta.where(ConceptoAmbiental.categoria.in_(categorias))
         return list(db.scalars(consulta.where(en_temporada(t, RegistroAmbiental.fecha, RegistroAmbiental.unidad_id))))
 
     idx_act = {m: i for i, m in enumerate(_meses_temporada(actual))}
@@ -273,17 +308,18 @@ def comparativa(empresa_id: int | None = None, unidad_id: int | None = None, tem
     else:
         proyeccion = None
 
-    catalogo = list(db.scalars(select(ConceptoAmbiental).order_by(ConceptoAmbiental.id)))
+    catalogo = list(db.scalars(select(ConceptoAmbiental).order_by(ConceptoAmbiental.categoria, ConceptoAmbiental.nombre)))
     conceptos = []
     for c in catalogo:
-        if c.categoria == RECICLAJE:
+        if c.categoria == RECICLAJE or (categorias and c.categoria not in categorias):
             continue
         sel_act = [r for r in reg_act if r.concepto_id == c.id]
         sel_ant = [r for r in reg_ant if r.concepto_id == c.id]
-        _, _, c_act, c_ant = comparar(sel_act, sel_ant, cantidad)
+        m_c_act, _, c_act, c_ant = comparar(sel_act, sel_ant, cantidad)
         _, _, t_act, t_ant = comparar(sel_act, sel_ant, tco2e)
         if c_act or c_ant:
             conceptos.append({"codigo": c.codigo, "nombre": c.nombre, "unidad_medida": c.unidad_medida,
+                              "categoria": c.categoria, "mensual_actual": [round(v) for v in m_c_act[:n]],
                               "actual": round(c_act), "anterior": round(c_ant),
                               "tco2e_actual": round(t_act, 2), "tco2e_anterior": round(t_ant, 2),
                               "variacion": _variacion(c_act, c_ant)})
@@ -296,10 +332,13 @@ def comparativa(empresa_id: int | None = None, unidad_id: int | None = None, tem
     unidades_medida = {c.codigo: c.unidad_medida for c in catalogo}
     indicadores = {}
     for clave, codigos in GRUPOS_CONCEPTO.items():
+        if categorias and not any(c.codigo in codigos and c.categoria in categorias for c in catalogo):
+            continue
         res = comparar([r for r in reg_act if r.concepto.codigo in codigos],
                        [r for r in reg_ant if r.concepto.codigo in codigos], cantidad)
         indicadores[clave] = indicador(*res, unidades_medida.get(codigos[0], ""))
-    indicadores["reciclaje"] = indicador(*comparar(rec_act, rec_ant, cantidad), "kg")
+    if not categorias or RECICLAJE in categorias:
+        indicadores["reciclaje"] = indicador(*comparar(rec_act, rec_ant, cantidad), "kg")
 
     materiales = []
     for material in catalogo:

@@ -4,7 +4,7 @@ from datetime import datetime
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from utils.bitacora import registrar
+from utils.historial import registrar
 from utils.comunes import temporada_para_fecha
 from utils.importadores import HojaImportada, ItemImportado, PuntoControl, leer_brcgs, orden_codigo
 from utils.importar_checklist import leer_checklist
@@ -54,10 +54,19 @@ def importar_brcgs(db: Session, contenido: bytes, nombre_archivo: str, usuario: 
         unidad = db.get(Unidad, unidad_id) if unidad_id else _detectar_unidad(db, hoja.lugar)
         temporada = temporada_para_fecha(db, hoja.fecha, unidad.empresa_id if unidad else None) if hoja.fecha else None
         origen = f"{nombre_archivo} / {hoja.hoja}"
-        duplicada = db.scalar(select(Auditoria.id).where(Auditoria.archivo_origen == origen)) is not None
+        version_brc = db.scalar(select(VersionNorma.id).join(Protocolo).where(Protocolo.codigo == "BRCGS"))
+        existente = db.scalar(select(Auditoria.id).where(Auditoria.archivo_origen == origen))
+        if existente is None and unidad and hoja.fecha:
+            # La misma hoja aunque la planilla venga con otro nombre: misma sucursal, fecha y cláusulas
+            existente = next((a.id for a in db.scalars(select(Auditoria).where(
+                Auditoria.origen == "importada", Auditoria.version_id == version_brc,
+                Auditoria.unidad_id == unidad.id, Auditoria.fecha == hoja.fecha))
+                if sorted(a.secciones or []) == sorted(hoja.secciones)), None)
+        duplicada = existente is not None
         resumen = hoja.resumen() | {
             "unidad": {"id": unidad.id, "nombre": unidad.etiqueta} if unidad else None,
             "temporada": temporada.nombre if temporada else None, "ya_importada": duplicada,
+            "auditoria_existente_id": existente,
         }
         errores = []
         if not unidad:
@@ -65,7 +74,8 @@ def importar_brcgs(db: Session, contenido: bytes, nombre_archivo: str, usuario: 
         if not temporada:
             errores.append("La fecha no cae en ninguna temporada registrada")
         if duplicada:
-            errores.append("Esta hoja ya fue importada")
+            # No se reemplaza: borraría sus respuestas y las no conformidades que ya se están trabajando
+            errores.append("Esta hoja ya fue importada: para cambiarla, edita la auditoría existente")
         resumen["errores"] = errores
         if confirmar and not errores:
             resumen["auditoria_id"] = _guardar_brcgs(db, hoja, unidad, origen, usuario)
@@ -143,7 +153,7 @@ def importar_checklist(db: Session, contenido: bytes, nombre_archivo: str, usuar
                "advertencias": leido.advertencias, "version_existente": None, "comparacion": None,
                "confirmado": confirmar, "nuevos": 0}
     if protocolo:
-        versiones = sorted(protocolo.versiones, key=lambda v: v.id)
+        versiones = sorted(protocolo.versiones, key=lambda v: v.created_at)
         existente = next((v for v in versiones if v.nombre == leido.version), None)
         if existente:
             ya = {r.codigo for r in existente.requisitos}

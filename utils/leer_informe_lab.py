@@ -37,10 +37,11 @@ PALABRAS_TIPO = {
     "Suelo": ["analisis de suelo", "suelo"],
     "Hoja": ["foliar", "hoja", "tejido vegetal"],
     "Fruta": ["fruto", "fruta"],
-    "MRL": ["residuos de plaguicidas", "multirresiduo", "mrl", "lmr", "plaguicida"],
     "Agua microbiológica": ["coliformes", "microbiologic", "e. coli"],
     "Agua fisicoquímica": ["fisicoquimic", "conductividad", "nitrato"],
 }
+# Los informes de residuos no son análisis de laboratorio: se comparan con ASOEX en Residuos y destinos (MRL)
+PALABRAS_MRL = ["residuos de plaguicidas", "multirresiduo", "lmr", "plaguicida"]
 SINONIMOS_ESPECIE = {"cereza": "cerezo", "ciruela": "ciruelo", "nectarin": "nectarino", "durazno": "duraznero",
                      "arandano": "arandano", "manzana": "manzano", "uva": "vid", "pera": "peral", "kiwi": "kiwi",
                      "palta": "palto", "almendra": "almendro", "nuez": "nogal"}
@@ -146,6 +147,9 @@ def leer_informe(contenido: bytes, nombre: str, parametros: list[str], especies:
     lectura.texto_leido = True
     normales = [normalizar(l) for l in originales]
     completo = " \n".join(normales)
+
+    if any(p in completo for p in PALABRAS_MRL):
+        lectura.advertencias.append("Parece un informe de residuos (MRL): compáralo en Residuos y destinos (MRL), no se guarda aquí")
 
     # Tipo de análisis sugerido (solo entre los tipos existentes)
     for tipo, palabras in PALABRAS_TIPO.items():

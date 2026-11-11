@@ -14,7 +14,10 @@ from pathlib import Path
 from config import Config
 from utils.texto import nombre_archivo_seguro
 
+# Subir: 15 min (un PDF de 30 MB desde terreno puede tardar). Bajar: 5 min, porque una URL de descarga se puede
+# reusar mientras está vigente y cada descarga es tráfico de salida que se cobra
 MINUTOS_VALIDEZ = 15
+MINUTOS_DESCARGA = 5
 DIR_LOCAL: Path = Config.PRIVADO_DIR / "archivos"
 
 
@@ -38,25 +41,56 @@ def _bucket():
     return storage.Client(project=Config.GCP_PROJECT_ID or None).bucket(Config.BUCKET_DOCUMENTOS)
 
 
+_credenciales = None
+
+
+def _firma_iam() -> dict:
+    """En Cloud Run no hay archivo de llave: la URL se firma con la cuenta de servicio vía IAM (signBlob).
+
+    Requiere que la cuenta de servicio de Cloud Run tenga roles/iam.serviceAccountTokenCreator sobre sí misma.
+    En local, con una llave de cuenta de servicio, no hace falta y se firma con ella.
+    """
+    global _credenciales
+    import google.auth
+    from google.auth.transport.requests import Request
+
+    if _credenciales is None:
+        _credenciales, _ = google.auth.default(scopes=["https://www.googleapis.com/auth/cloud-platform"])
+    if getattr(_credenciales, "signer", None):
+        return {}
+    # El token dura ~1 h: se renueva solo cuando venció, no en cada URL
+    if not _credenciales.valid:
+        _credenciales.refresh(Request())
+    return {"service_account_email": _credenciales.service_account_email, "access_token": _credenciales.token}
+
+
 def _url_local(metodo: str, clave: str) -> str:
     expira = int(time.time()) + MINUTOS_VALIDEZ * 60
     firma = _firma_local(metodo, clave, expira)
     return f"{Config.URL_PUBLICA_API}/api/archivos-locales/{quote(clave)}?expira={expira}&firma={firma}"
 
 
-def url_subida(clave: str, tipo_contenido: str) -> str:
+def url_subida(clave: str, tipo_contenido: str, max_bytes: int) -> tuple[str, dict[str, str]]:
+    """URL firmada para subir y las cabeceras que el navegador debe enviar con ella.
+
+    En Cloud Storage el tamaño máximo va firmado (x-goog-content-length-range): Google rechaza un archivo más
+    grande aunque alguien use la URL fuera de la aplicación. El bucket debe permitir esa cabecera en su CORS.
+    """
     if Config.ALMACENAMIENTO == "gcs":
-        return _bucket().blob(clave).generate_signed_url(
-            version="v4", expiration=timedelta(minutes=MINUTOS_VALIDEZ), method="PUT", content_type=tipo_contenido)
-    return _url_local("PUT", clave)
+        cabeceras = {"x-goog-content-length-range": f"0,{max_bytes}"}
+        url = _bucket().blob(clave).generate_signed_url(
+            version="v4", expiration=timedelta(minutes=MINUTOS_VALIDEZ), method="PUT", content_type=tipo_contenido,
+            headers=cabeceras, **_firma_iam())
+        return url, cabeceras
+    return _url_local("PUT", clave), {}
 
 
 def url_descarga(clave: str, nombre: str | None = None) -> str:
     if Config.ALMACENAMIENTO == "gcs":
         disposicion = f'attachment; filename="{nombre_archivo_seguro(nombre)}"' if nombre else None
         return _bucket().blob(clave).generate_signed_url(
-            version="v4", expiration=timedelta(minutes=MINUTOS_VALIDEZ), method="GET",
-            response_disposition=disposicion)
+            version="v4", expiration=timedelta(minutes=MINUTOS_DESCARGA), method="GET",
+            response_disposition=disposicion, **_firma_iam())
     return _url_local("GET", clave)
 
 

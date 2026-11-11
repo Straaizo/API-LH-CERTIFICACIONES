@@ -3,12 +3,12 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
 from config import Config
-from utils.auth import unidades_permitidas, usuario_actual, verificar_clave_demo
+from utils.auth import modulos_visibles, unidades_permitidas, usuario_actual, verificar_clave_demo
 from utils.comunes import obtener, temporada_actual, unidad_dict
 from utils.db import get_db
 from utils.modelos import (
     Area, CategoriaDocumento, ConceptoAmbiental, Empresa, Especie, FuenteAgua, LimiteParametro, Protocolo, TipoAnalisis,
-    Unidad, Usuario, VersionNorma, sucursal_protocolos, usuario_apps,
+    TIPOS_SIN_CERTIFICACION, Unidad, Usuario, VersionNorma, usuario_apps,
 )
 from utils.temporadas import listar_temporadas
 
@@ -33,7 +33,7 @@ def _usuarios_app(db: Session) -> list[Usuario]:
 
 def _usuario_dict(u: Usuario) -> dict:
     return {"id": u.id, "nombre": u.nombre or u.usuario, "usuario": u.usuario, "email": u.email, "rol": u.rol,
-            "permisos": sorted(u.codigos_permiso), "unidades": [unidad_dict(x) for x in u.unidades]}
+            "permisos": sorted(u.codigos_permiso), "modulos": modulos_visibles(u), "unidades": [unidad_dict(x) for x in u.unidades]}
 
 
 @router.get("/yo")
@@ -44,9 +44,9 @@ def yo(usuario: Usuario = Depends(usuario_actual)) -> dict:
 @router.get("/catalogos")
 def catalogos(usuario: Usuario = Depends(usuario_actual), db: Session = Depends(get_db)) -> dict:
     permitidas = unidades_permitidas(usuario)
-    # Sucursales que tienen alguna norma (las demás no participan en certificaciones)
-    unidades = [u for u in db.scalars(select(Unidad).where(Unidad.id.in_(
-        select(sucursal_protocolos.c.sucursal_id))).order_by(Unidad.empresa_id, Unidad.id))]
+    # Todas las sucursales menos vivero y oficina; no depende de que tengan normas cargadas
+    unidades = [u for u in db.scalars(select(Unidad).where(
+        Unidad.tipo_id.is_(None) | Unidad.tipo_id.not_in(TIPOS_SIN_CERTIFICACION)).order_by(Unidad.empresa_id, Unidad.id))]
     if permitidas is not None:
         unidades = [u for u in unidades if u.id in permitidas]
     ids = {u.id for u in unidades}
@@ -56,7 +56,7 @@ def catalogos(usuario: Usuario = Depends(usuario_actual), db: Session = Depends(
                      for e in db.scalars(select(Empresa).order_by(Empresa.id))],
         "unidades": [unidad_dict(u) for u in unidades],
         "areas": [{"id": a.id, "nombre": a.nombre, "unidad_id": a.unidad_id}
-                  for a in db.scalars(select(Area).order_by(Area.id)) if a.unidad_id in ids],
+                  for a in db.scalars(select(Area).order_by(Area.nombre)) if a.unidad_id in ids],
         "temporadas": [{"id": t.id, "nombre": t.nombre, "inicio": t.inicio, "fin": t.fin,
                         "actual": actual is not None and t.id == actual.id} for t in listar_temporadas(db)],
         "protocolos": [
@@ -65,8 +65,8 @@ def catalogos(usuario: Usuario = Depends(usuario_actual), db: Session = Depends(
              "solo_unidades": [u.id for u in p.unidades if u.id in ids],
              "versiones": [{"id": v.id, "nombre": v.nombre, "vigente": v.vigente, "requisitos": len(v.requisitos),
                             "cargada_en": v.cargada_en, "archivo": v.archivo}
-                           for v in sorted(p.versiones, key=lambda v: (not v.vigente, -(v.id or 0)))]}
-            for p in db.scalars(select(Protocolo).order_by(Protocolo.ambito, Protocolo.id))
+                           for v in sorted(p.versiones, key=lambda v: (not v.vigente, -(v.created_at.timestamp() if v.created_at else 0)))]}
+            for p in db.scalars(select(Protocolo).order_by(Protocolo.ambito, Protocolo.nombre))
         ],
         "categorias": [{"id": c.id, "nombre": c.nombre, "ambito": c.ambito,
                         "requiere_vencimiento": c.requiere_vencimiento, "requiere_codigo": c.requiere_codigo}
@@ -74,7 +74,7 @@ def catalogos(usuario: Usuario = Depends(usuario_actual), db: Session = Depends(
         "tipos_analisis": [
             {"id": t.id, "nombre": t.nombre, "ambito": t.ambito, "usa_fuente_agua": t.usa_fuente_agua,
              "usa_especie": t.usa_especie}
-            for t in db.scalars(select(TipoAnalisis).order_by(TipoAnalisis.ambito, TipoAnalisis.id))
+            for t in db.scalars(select(TipoAnalisis).order_by(TipoAnalisis.ambito, TipoAnalisis.nombre))
         ],
         "limites": [{"id": lp.id, "tipo_analisis_id": lp.tipo_analisis_id, "parametro": lp.parametro,
                      "unidad_medida": lp.unidad_medida, "minimo": lp.minimo, "maximo": lp.maximo, "norma": lp.norma}
@@ -91,7 +91,7 @@ def catalogos(usuario: Usuario = Depends(usuario_actual), db: Session = Depends(
 
 
 @router.get("/versiones/{version_id}/requisitos")
-def requisitos_version(version_id: int, _: Usuario = Depends(usuario_actual), db: Session = Depends(get_db)) -> dict:
+def requisitos_version(version_id: str, _: Usuario = Depends(usuario_actual), db: Session = Depends(get_db)) -> dict:
     """Puntos de control de una versión de norma, para revisarla antes de usarla en una auditoría."""
     version = obtener(db, VersionNorma, version_id)
     return {

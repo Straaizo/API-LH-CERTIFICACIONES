@@ -19,7 +19,10 @@ def main() -> None:
     salida = ["-- Esquema Certificaciones (MySQL). Generado desde utils/modelos.py",
               "-- Requiere las tablas compartidas general_empresa/sucursal/temporada/usuario ya existentes.\n"]
     for tabla in tablas_propias():
-        salida.append(str(CreateTable(tabla).compile(dialect=engine.dialect)).strip() + ";\n")
+        ddl = str(CreateTable(tabla).compile(dialect=engine.dialect)).strip()
+        # Igual que las tablas de la empresa: MySQL también marca la hora si alguien edita la fila a mano
+        ddl = ddl.replace("updated_at DATETIME,", "updated_at DATETIME NULL ON UPDATE CURRENT_TIMESTAMP,")
+        salida.append(ddl + ";\n")
         for indice in tabla.indexes:
             salida.append(str(CreateIndex(indice).compile(dialect=engine.dialect)).strip() + ";\n")
     salida.append(VISTAS.read_text(encoding="utf-8"))

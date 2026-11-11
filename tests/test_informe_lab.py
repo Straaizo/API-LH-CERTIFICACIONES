@@ -10,7 +10,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from utils.leer_informe_lab import leer_informe  # noqa: E402
 
-TIPOS = ["Agua fisicoquímica", "Agua microbiológica", "Suelo", "Hoja", "Fruta", "MRL"]
+TIPOS = ["Agua fisicoquímica", "Agua microbiológica", "Suelo", "Hoja", "Fruta"]
 
 
 def _pdf(lineas: list[str]) -> bytes:

@@ -1,3 +1,4 @@
+import logging
 from datetime import date, timedelta
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
@@ -6,8 +7,8 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
-from utils.auth import NC, solo_certificaciones, tiene_permiso, usuario_actual, verificar_unidad
-from utils.bitacora import registrar
+from utils.auth import NC, requiere_ver, solo_certificaciones, tiene_permiso, verificar_unidad
+from utils.historial import registrar
 from utils.comunes import (
     filtrar_temporada, filtrar_unidades, obtener, obtener_temporada, temporada_dict, temporada_para_fecha, unidad_dict,
 )
@@ -29,16 +30,16 @@ PLAZO_NC_DIAS = 28
 
 
 class AuditoriaEntrada(BaseModel):
-    version_id: int
+    version_id: str
     unidad_id: int
-    titulo: str | None = Field(default=None, max_length=250)
+    titulo: str | None = Field(default=None, max_length=120)
     fecha_inicio: date
     fecha_fin: date | None = None
     auditor: str | None = None
 
 
 class AuditoriaCambios(BaseModel):
-    titulo: str | None = Field(default=None, max_length=250)
+    titulo: str | None = Field(default=None, max_length=120)
     fecha_inicio: date | None = None
     fecha_fin: date | None = None
     auditor: str | None = None
@@ -48,7 +49,7 @@ class AuditoriaCambios(BaseModel):
 class RespuestaEntrada(BaseModel):
     resultado: str | None  # si | no | na | None (sin responder)
     comentario: str | None = None
-    area_id: int | None = None
+    area_id: str | None = None
 
 
 def seccion_principal(requisito: Requisito) -> str:
@@ -98,7 +99,7 @@ def _auditoria_dict(a: Auditoria, ncs: int = 0) -> dict:
 
 @router.get("/auditorias")
 def listar(empresa_id: int | None = None, unidad_id: int | None = None, temporada_id: int | None = None,
-           protocolo_id: int | None = None, usuario: Usuario = Depends(usuario_actual),
+           protocolo_id: str | None = None, usuario: Usuario = Depends(requiere_ver("AUDITORIAS")),
            db: Session = Depends(get_db)) -> list[dict]:
     consulta = filtrar_unidades(
         select(Auditoria).options(selectinload(Auditoria.respuestas).selectinload(Respuesta.requisito)),
@@ -138,7 +139,7 @@ def planificar(datos: AuditoriaEntrada, usuario: Usuario = Depends(solo_certific
 
 
 @router.patch("/auditorias/{auditoria_id}")
-def modificar(auditoria_id: int, datos: AuditoriaCambios, usuario: Usuario = Depends(solo_certificaciones),
+def modificar(auditoria_id: str, datos: AuditoriaCambios, usuario: Usuario = Depends(solo_certificaciones),
               db: Session = Depends(get_db)) -> dict:
     auditoria = obtener(db, Auditoria, auditoria_id)
     cambios = datos.model_dump(exclude_unset=True)
@@ -160,14 +161,14 @@ def modificar(auditoria_id: int, datos: AuditoriaCambios, usuario: Usuario = Dep
     return _auditoria_dict(auditoria)
 
 
-def _historial(db: Session, auditoria: Auditoria) -> dict[int, list[dict]]:
+def _historial(db: Session, auditoria: Auditoria) -> dict[str, list[dict]]:
     """Resultados de auditorías anteriores de la misma norma y unidad, por requisito (más reciente primero)."""
     anteriores = db.scalars(
         select(Auditoria).where(Auditoria.version_id == auditoria.version_id, Auditoria.unidad_id == auditoria.unidad_id,
                                 Auditoria.fecha < auditoria.fecha, Auditoria.id != auditoria.id)
         .order_by(Auditoria.fecha.desc())
     ).all()
-    historial: dict[int, list[dict]] = {}
+    historial: dict[str, list[dict]] = {}
     for a in anteriores:
         for r in a.respuestas:
             if r.resultado:
@@ -177,7 +178,7 @@ def _historial(db: Session, auditoria: Auditoria) -> dict[int, list[dict]]:
 
 
 @router.get("/auditorias/{auditoria_id}")
-def detalle(auditoria_id: int, usuario: Usuario = Depends(usuario_actual), db: Session = Depends(get_db)) -> dict:
+def detalle(auditoria_id: str, usuario: Usuario = Depends(requiere_ver("AUDITORIAS")), db: Session = Depends(get_db)) -> dict:
     auditoria = obtener(db, Auditoria, auditoria_id)
     verificar_unidad(usuario, auditoria.unidad_id)
     respuestas = {r.requisito_id: r for r in auditoria.respuestas}
@@ -237,7 +238,7 @@ def _encargado_de(db: Session, unidad_id: int) -> Usuario | None:
 
 
 @router.post("/auditorias/{auditoria_id}/emitir")
-def emitir(auditoria_id: int, usuario: Usuario = Depends(solo_certificaciones), db: Session = Depends(get_db)) -> dict:
+def emitir(auditoria_id: str, usuario: Usuario = Depends(solo_certificaciones), db: Session = Depends(get_db)) -> dict:
     """Emite el informe: cierra la auditoría y entrega cada no conformidad al jefe del campo o área,
     con plazo de 28 días para el análisis de causa raíz y las acciones correctiva y preventiva."""
     auditoria = obtener(db, Auditoria, auditoria_id)
@@ -260,7 +261,7 @@ def emitir(auditoria_id: int, usuario: Usuario = Depends(solo_certificaciones), 
 
 
 @router.get("/auditorias/{auditoria_id}/exportar")
-def exportar(auditoria_id: int, clausulas: str | None = None, usuario: Usuario = Depends(usuario_actual),
+def exportar(auditoria_id: str, clausulas: str | None = None, usuario: Usuario = Depends(requiere_ver("AUDITORIAS")),
              db: Session = Depends(get_db)) -> Response:
     """Excel con el formato de las planillas: todas las cláusulas o las indicadas ("5,6")."""
     auditoria = obtener(db, Auditoria, auditoria_id)
@@ -277,7 +278,9 @@ def exportar(auditoria_id: int, clausulas: str | None = None, usuario: Usuario =
     try:
         contenido = exportar_auditoria(auditoria, [(c, titulos.get(c, ""), reqs) for c, reqs in grupos.items()], ncs)
     except Exception as exc:
-        raise HTTPException(500, f"No se pudo generar el archivo: {exc}") from exc
+        # El detalle queda en el registro del servidor; al navegador no se le muestran rutas ni trazas internas
+        logging.getLogger(__name__).exception("No se pudo generar el archivo")
+        raise HTTPException(500, "No se pudo generar el archivo") from exc
     sufijo = f"clausulas {'-'.join(elegidas)}" if elegidas else "completa"
     nombre = nombre_archivo_seguro(f"{titulo_auditoria(auditoria)} {sufijo}")
     return Response(contenido, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -285,7 +288,7 @@ def exportar(auditoria_id: int, clausulas: str | None = None, usuario: Usuario =
 
 
 @router.put("/auditorias/{auditoria_id}/respuestas/{requisito_id}")
-def responder(auditoria_id: int, requisito_id: int, datos: RespuestaEntrada,
+def responder(auditoria_id: str, requisito_id: str, datos: RespuestaEntrada,
               usuario: Usuario = Depends(solo_certificaciones), db: Session = Depends(get_db)) -> dict:
     auditoria = obtener(db, Auditoria, auditoria_id)
     if auditoria.estado == "cerrada":
@@ -324,7 +327,7 @@ def responder(auditoria_id: int, requisito_id: int, datos: RespuestaEntrada,
 
 @router.get("/programa")
 def programa(temporada_id: int, empresa_id: int | None = None, unidad_id: int | None = None,
-             protocolo_id: int | None = None, usuario: Usuario = Depends(usuario_actual),
+             protocolo_id: str | None = None, usuario: Usuario = Depends(requiere_ver("AUDITORIAS")),
              db: Session = Depends(get_db)) -> dict:
     temporada = obtener_temporada(db, temporada_id)
     auditorias = listar(empresa_id, unidad_id, temporada_id, protocolo_id, usuario, db)

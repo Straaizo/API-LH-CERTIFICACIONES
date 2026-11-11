@@ -1,0 +1,37 @@
+# Lo que NO se sube a Google Cloud con `gcloud run deploy --source .`
+# Credenciales y variables locales (en Cloud Run van como variables o Secret Manager)
+.env*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+secrets/
+credentials/
+credenciales*.json
+service-account*.json
+gcp-credentials*.json
+*-sa.json
+
+# Datos reales y base demo
+*.sql
+!migrations/*.sql
+*.csv
+*.xlsx
+*.xls
+*.xlsm
+*.db
+privado/
+
+# Desarrollo
+.git/
+.gitignore
+venv/
+.venv/
+__pycache__/
+.pytest_cache/
+tests/
+*.log
+.vscode/
+.idea/
+CLAUDE*.md

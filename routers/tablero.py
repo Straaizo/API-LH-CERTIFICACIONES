@@ -10,11 +10,11 @@ from routers.documentos import calcular_vencimientos
 from routers.laboratorio import listar as listar_analisis
 from routers.no_conformidades import listar as listar_nc
 from routers.registros import _atraso
-from utils.auth import solo_certificaciones, usuario_actual
+from utils.auth import puede_ver, solo_historial, usuario_actual, ve_todo
 from utils.comunes import buscar_temporada, filtrar_unidades, temporada_actual
 from utils.db import get_db
 from utils.modelos import (
-    Bitacora, Certificacion, Empresa, Protocolo, Registro, Usuario,
+    Historial, Certificacion, Empresa, Protocolo, Registro, Usuario,
 )
 
 router = APIRouter()
@@ -47,24 +47,27 @@ def _semaforo(cert: Certificacion | None, auditorias: list[dict], ncs: list[dict
 
 @router.get("/dashboard")
 def dashboard(empresa_id: int | None = None, unidad_id: int | None = None, temporada_id: int | None = None,
-              protocolo_id: int | None = None, usuario: Usuario = Depends(usuario_actual),
+              protocolo_id: str | None = None, usuario: Usuario = Depends(usuario_actual),
               db: Session = Depends(get_db)) -> dict:
     temporada = buscar_temporada(db, temporada_id) if temporada_id else temporada_actual(db)
     t_id = temporada.id if temporada else None
+    # Cada bloque solo con los módulos que el usuario puede ver; el resto queda vacío
+    ve = {m: puede_ver(usuario, m) for m in ("AUDITORIAS", "NC", "LABORATORIO", "DOCUMENTOS", "REGISTROS")}
     auditorias = listar_auditorias(empresa_id=empresa_id, unidad_id=unidad_id, temporada_id=t_id,
-                                   protocolo_id=protocolo_id, usuario=usuario, db=db)
+                                   protocolo_id=protocolo_id, usuario=usuario, db=db) if ve["AUDITORIAS"] else []
     ncs = listar_nc(empresa_id=empresa_id, unidad_id=unidad_id, temporada_id=None, protocolo_id=protocolo_id,
                     estado=None, solo_reincidentes=False, solo_repetidas=False, responsable_id=None,
-                    usuario=usuario, db=db)
+                    usuario=usuario, db=db) if ve["NC"] else []
     analisis = listar_analisis(empresa_id=empresa_id, unidad_id=unidad_id, temporada_id=t_id, tipo_analisis_id=None,
-                               solo_fuera_de_norma=False, usuario=usuario, db=db)
-    vencimientos = calcular_vencimientos(db, usuario, empresa_id, unidad_id, protocolo_id)
+                               solo_fuera_de_norma=False, usuario=usuario, db=db) if ve["LABORATORIO"] else []
+    vencimientos = calcular_vencimientos(db, usuario, empresa_id, unidad_id, protocolo_id) if ve["DOCUMENTOS"] else []
 
     empresas = db.scalars(select(Empresa).where(Empresa.id == empresa_id) if empresa_id else select(Empresa)).all()
     protocolos = db.scalars(select(Protocolo).where(Protocolo.id == protocolo_id) if protocolo_id
-                            else select(Protocolo).order_by(Protocolo.ambito, Protocolo.id)).all()
+                            else select(Protocolo).order_by(Protocolo.ambito, Protocolo.nombre)).all()
     semaforo = []
-    for e in empresas:
+    # El semáforo es el estado de ambas empresas: solo para quien ve todo (certificaciones o lectura total)
+    for e in (empresas if ve_todo(usuario) else []):
         for p in protocolos:
             certs = db.scalars(select(Certificacion).where(Certificacion.empresa_id == e.id,
                                                            Certificacion.protocolo_id == p.id)
@@ -96,7 +99,7 @@ def dashboard(empresa_id: int | None = None, unidad_id: int | None = None, tempo
             conteo[k] = conteo.get(k, 0) + 1
         return [{"nombre": k, "cantidad": v} for k, v in sorted(conteo.items(), key=lambda x: -x[1])]
 
-    registros = db.scalars(filtrar_unidades(select(Registro), Registro.unidad_id, usuario, empresa_id, unidad_id)).all()
+    registros = db.scalars(filtrar_unidades(select(Registro), Registro.unidad_id, usuario, empresa_id, unidad_id)).all()         if ve["REGISTROS"] else []
 
     return {
         "temporada": {"id": t_id, "nombre": temporada.nombre if temporada else None},
@@ -119,18 +122,19 @@ def dashboard(empresa_id: int | None = None, unidad_id: int | None = None, tempo
         "nc_repetidas": [n for n in abiertas if n["repetida"]][:10],
         "proximos_vencimientos": [v for v in vencimientos if v["dias"] <= 60][:10],
         "analisis_fuera_norma": [a for a in analisis if a["fuera_de_norma"]][:10],
-        "cobertura": programa(t_id, empresa_id, unidad_id, protocolo_id, usuario, db)["filas"] if t_id else [],
+        "cobertura": programa(t_id, empresa_id, unidad_id, protocolo_id, usuario, db)["filas"]
+        if t_id and ve["AUDITORIAS"] else [],
     }
 
 
-@router.get("/bitacora")
-def bitacora(entidad: str | None = None, entidad_id: int | None = None, limite: int = 200,
-             _: Usuario = Depends(solo_certificaciones), db: Session = Depends(get_db)) -> list[dict]:
-    consulta = select(Bitacora).order_by(Bitacora.fecha_hora.desc(), Bitacora.id.desc()).limit(min(limite, 1000))
+@router.get("/historial")
+def historial(entidad: str | None = None, entidad_id: str | None = None, limite: int = 200,
+             _: Usuario = Depends(solo_historial), db: Session = Depends(get_db)) -> list[dict]:
+    consulta = select(Historial).order_by(Historial.fecha_hora.desc(), Historial.id.desc()).limit(min(limite, 1000))
     if entidad:
-        consulta = consulta.where(Bitacora.entidad == entidad)
+        consulta = consulta.where(Historial.entidad == entidad)
     if entidad_id:
-        consulta = consulta.where(Bitacora.entidad_id == entidad_id)
+        consulta = consulta.where(Historial.entidad_id == entidad_id)
     return [{"id": b.id, "fecha_hora": b.fecha_hora, "usuario": b.usuario.nombre if b.usuario else "Sistema",
              "accion": b.accion, "entidad": b.entidad, "entidad_id": b.entidad_id, "detalle": b.detalle}
             for b in db.scalars(consulta)]

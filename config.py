@@ -1,5 +1,6 @@
 import os
 from pathlib import Path
+from urllib.parse import quote_plus
 
 from dotenv import load_dotenv
 
@@ -22,7 +23,8 @@ class Config:
 
     # ── Conexión a base de datos ──────────────────────────────────────────────
     # sqlite = demo local en privado/demo.db | mysql (Cloud SQL)
-    DB_MOTOR = os.getenv("DB_MOTOR", "sqlite")
+    # DB_ENV=gcp_proxy (como en LH Inventario) equivale a DB_MOTOR=mysql por el proxy en 127.0.0.1
+    DB_MOTOR = os.getenv("DB_MOTOR") or ("mysql" if os.getenv("DB_ENV") == "gcp_proxy" else "sqlite")
     # DATABASE_URL (formato SQLAlchemy) se usa en Cloud Run. Si no está, se arma con DB_*.
     DATABASE_URL = os.getenv("DATABASE_URL", "")
 
@@ -40,13 +42,17 @@ class Config:
     # demo: usuario elegido en pantalla (solo desarrollo) | jwt: usuario o correo + clave (igual que LH Inventario)
     AUTH_MODO = os.getenv("AUTH_MODO", "demo")
     # Id de Certificaciones en general_dim_app (lo crea el equipo del portal web; propuesta: 16)
-    APP_ID = int(os.getenv("APP_ID", 16))
+    # En la demo (SQLite) basta el 16 de prueba; con la base real se exige explícito: el 16 real es LH MONITOREO
+    APP_ID = int(os.getenv("APP_ID") or (16 if DB_MOTOR == "sqlite" else 0))
     # Firma de los tokens: Secret Manager en Cloud Run, .env en local. Obligatoria con AUTH_MODO=jwt
     JWT_SECRET_KEY = os.getenv("JWT_SECRET_KEY", "").strip()
     JWT_HORAS_ACCESO = int(os.getenv("JWT_HORAS_ACCESO", 10))
     JWT_DIAS_REFRESCO = int(os.getenv("JWT_DIAS_REFRESCO", 7))
     # Demo publicada (Cloud Run): sin esta clave no se entra. Vacía = demo local sin clave.
     DEMO_CLAVE = os.getenv("DEMO_CLAVE", "").strip()
+    # TEMPORAL, solo local: mientras la app no exista en el portal, entra cualquier usuario activo con su clave real
+    # y queda como CERTIFICACIONES_ADMIN + HISTORIAL. Borrar cuando se cree la app y se ponga su APP_ID.
+    LOGIN_LOCAL_SIN_APP = os.getenv("LOGIN_LOCAL_SIN_APP") == "1"
     # Demo publicada: carpeta (bucket montado) con la base y los archivos de partida
     SEMILLA_DIR = os.getenv("SEMILLA_DIR", "")
 
@@ -73,13 +79,20 @@ class Config:
             return f"sqlite:///{(cls.PRIVADO_DIR / 'demo.db').as_posix()}"
         driver = {"postgresql": "postgresql+psycopg", "mysql": "mysql+pymysql"}[cls.DB_MOTOR]
         puerto = f":{cls.DB_PORT}" if cls.DB_PORT else ""
-        return f"{driver}://{cls.DB_USER}:{cls.DB_PASSWORD}@{cls.DB_HOST}{puerto}/{cls.DB_NAME}"
+        # Usuario y clave codificados: una clave con @, :, / o # rompería la URL
+        return f"{driver}://{quote_plus(cls.DB_USER)}:{quote_plus(cls.DB_PASSWORD)}@{cls.DB_HOST}{puerto}/{cls.DB_NAME}"
 
 
 if Config.ENTORNO == "produccion" and (
     Config.AUTH_MODO == "demo" or Config.DB_MOTOR == "sqlite" or Config.ALMACENAMIENTO == "local"
 ):
     raise RuntimeError("En produccion no se permite AUTH_MODO=demo, DB_MOTOR=sqlite ni ALMACENAMIENTO=local")
+
+if Config.LOGIN_LOCAL_SIN_APP and (Config.ENTORNO == "produccion" or os.getenv("K_SERVICE")):
+    raise RuntimeError("LOGIN_LOCAL_SIN_APP solo se permite en local, nunca en producción ni en Cloud Run")
+
+if Config.DB_MOTOR != "sqlite" and not Config.APP_ID and not Config.LOGIN_LOCAL_SIN_APP:
+    raise RuntimeError("Con la base real falta APP_ID: el id de Certificaciones en general_dim_app")
 
 if Config.AUTH_MODO == "jwt" and len(Config.JWT_SECRET_KEY) < 32:
     raise RuntimeError("AUTH_MODO=jwt requiere JWT_SECRET_KEY de al menos 32 caracteres")

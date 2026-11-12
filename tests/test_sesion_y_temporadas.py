@@ -148,3 +148,20 @@ def test_login_tarda_lo_mismo_exista_o_no_el_usuario(cliente, monkeypatch):
         tiempos[caso] = time.perf_counter() - inicio
         assert r.status_code == 401
     assert all(t >= 0.3 for t in tiempos.values()), tiempos
+
+
+def test_nombres_del_portal_se_traducen_a_codigos():
+    """Los permisos se nombran en el portal con su descripción; la API trabaja con el código."""
+    from utils.auth import modulos_visibles, puede_ver, tiene_permiso
+    from utils.modelos import NOMBRES_PERMISO, Permiso
+    u = Usuario(id="u-x", usuario="x", nombre="X", id_estado=1, permisos=[
+        Permiso(id="a", nombre="NC: plan de acción y cargar evidencias", app_id=Config.APP_ID, id_estado=1),
+        Permiso(id="b", nombre="Documentos: ver, descargar y vencimientos ", app_id=Config.APP_ID, id_estado=1),
+        Permiso(id="c", nombre="REGISTROS_VER", app_id=Config.APP_ID, id_estado=1),  # código antiguo: sigue sirviendo
+        Permiso(id="d", nombre="General: administrar, aprobar y cerrar todo", app_id=10, id_estado=1),  # otra app
+    ])
+    assert u.codigos_permiso == {"NC_EDITAR", "DOCUMENTOS_VER", "REGISTROS_VER"}
+    assert tiene_permiso(u, "NC_EDITAR") and not tiene_permiso(u, "REGISTROS_EDITAR")
+    assert modulos_visibles(u) == ["REGISTROS", "DOCUMENTOS", "NC"] and puede_ver(u, "NC")
+    assert u.rol == "encargado"
+    assert all(len(n) <= 45 for n in NOMBRES_PERMISO)

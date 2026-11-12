@@ -158,6 +158,24 @@ PERMISO_VER = "CERTIFICACIONES_VER"
 # Ver el historial completo de cambios; se asigna aparte en el portal (no basta con ADMIN)
 PERMISO_HISTORIAL = "CERTIFICACIONES_HISTORIAL"
 
+# Nombre que ve quien asigna permisos en el portal web (usuario_dim_permiso.nombre, máx. 45 caracteres) → código
+# que usa la API. Los códigos solos (REGISTROS_EDITAR...) también se aceptan, por compatibilidad.
+NOMBRES_PERMISO = {
+    "Registros: ver, descargar y su historial": "REGISTROS_VER",
+    "Registros: llenar, firmar y enviar a revisión": "REGISTROS_EDITAR",
+    "NC: ver hallazgos, plazos y su estado": "NC_VER",
+    "NC: plan de acción y cargar evidencias": "NC_EDITAR",
+    "Laboratorio: ver análisis y límites MRL": "LABORATORIO_VER",
+    "Laboratorio: cargar y reemplazar análisis": "LABORATORIO_EDITAR",
+    "Ambiente: ver consumos, huella y reciclaje": "AMBIENTE_VER",
+    "Ambiente: registrar consumos": "AMBIENTE_EDITAR",
+    "Auditorías: ver programa y respuestas": "AUDITORIAS_VER",
+    "Documentos: ver, descargar y vencimientos": "DOCUMENTOS_VER",
+    "General: ver todo sin editar (auditores)": PERMISO_VER,
+    "General: ver historial de cambios de todos": PERMISO_HISTORIAL,
+    "General: administrar, aprobar y cerrar todo": PERMISO_ADMIN,
+}
+
 
 class Usuario(Base):
     """Usuario del portal web. Acceso, permisos y sucursales se administran allá, no en esta aplicación."""
@@ -189,7 +207,8 @@ class Usuario(Base):
     def codigos_permiso(self) -> set[str]:
         if Config.LOGIN_LOCAL_SIN_APP:  # temporal, solo local (ver config.py)
             return {PERMISO_ADMIN, PERMISO_HISTORIAL}
-        return {p.nombre for p in self.permisos if p.app_id == Config.APP_ID and p.id_estado == 1}
+        return {NOMBRES_PERMISO.get(p.nombre.strip(), p.nombre.strip())
+                for p in self.permisos if p.app_id == Config.APP_ID and p.id_estado == 1}
 
     @property
     def rol(self) -> str:

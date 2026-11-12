@@ -155,8 +155,8 @@ def test_nombres_del_portal_se_traducen_a_codigos():
     from utils.auth import modulos_visibles, puede_ver, tiene_permiso
     from utils.modelos import NOMBRES_PERMISO, Permiso
     u = Usuario(id="u-x", usuario="x", nombre="X", id_estado=1, permisos=[
-        Permiso(id="a", nombre="NC: plan de acción y cargar evidencias", app_id=Config.APP_ID, id_estado=1),
-        Permiso(id="b", nombre="Documentos: ver, descargar y vencimientos ", app_id=Config.APP_ID, id_estado=1),
+        Permiso(id="a", nombre="NC - Editar no conformidades de la sucursal", app_id=Config.APP_ID, id_estado=1),
+        Permiso(id="b", nombre="Documentos: ver, descargar y vencimientos ", app_id=Config.APP_ID, id_estado=1),  # anterior
         Permiso(id="c", nombre="REGISTROS_VER", app_id=Config.APP_ID, id_estado=1),  # código antiguo: sigue sirviendo
         Permiso(id="d", nombre="General: administrar, aprobar y cerrar todo", app_id=10, id_estado=1),  # otra app
     ])

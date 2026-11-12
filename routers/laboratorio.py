@@ -7,6 +7,7 @@ from sqlalchemy import func, insert, select
 from sqlalchemy.orm import Session, selectinload
 
 from utils import almacenamiento
+from utils.proteccion import MAX_MB_ARCHIVO
 from utils.auth import LABORATORIO, requiere_permiso, requiere_ver, verificar_unidad
 from utils.historial import registrar
 from utils.duplicados import error_duplicado, existente
@@ -213,7 +214,7 @@ def informe(analisis_id: str, usuario: Usuario = Depends(requiere_ver("LABORATOR
 
 # ---------- Residuos (MRL) y destinos según ASOEX ----------
 
-MAX_ARCHIVO = 15 * 1024 * 1024
+MAX_ARCHIVO = MAX_MB_ARCHIVO * 1024 * 1024
 
 
 class ResiduoEntrada(BaseModel):

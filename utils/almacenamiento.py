@@ -14,7 +14,7 @@ from pathlib import Path
 from config import Config
 from utils.texto import nombre_archivo_seguro
 
-# Subir: 15 min (un PDF de 30 MB desde terreno puede tardar). Bajar: 5 min, porque una URL de descarga se puede
+# Subir: 15 min (una foto de 10 MB con mala señal en terreno puede tardar). Bajar: 5 min, porque una URL de descarga se puede
 # reusar mientras está vigente y cada descarga es tráfico de salida que se cobra
 MINUTOS_VALIDEZ = 15
 MINUTOS_DESCARGA = 5

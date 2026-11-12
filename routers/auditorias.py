@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
+from utils.proteccion import MAX_MB_ARCHIVO
 from utils.auth import NC, requiere_ver, solo_certificaciones, tiene_permiso, verificar_unidad
 from utils.historial import registrar
 from utils.comunes import (
@@ -24,7 +25,7 @@ from utils.hora import ahora
 
 router = APIRouter()
 
-MAX_PLANILLA = 15 * 1024 * 1024
+MAX_PLANILLA = MAX_MB_ARCHIVO * 1024 * 1024
 # Plazo para responder las no conformidades desde que se emite el informe
 PLAZO_NC_DIAS = 28
 

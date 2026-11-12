@@ -50,7 +50,9 @@ PROXIES_CONFIABLES = _entero("PROXIES_CONFIABLES", 0)
 LIMITE_GENERAL = _entero("LIMITE_PETICIONES_MINUTO", 240)   # por IP; la app abre varias consultas por pantalla
 LIMITE_PESADO = _entero("LIMITE_PESADAS_MINUTO", 30)         # subidas, PDF, Word, ZIP y lectura de informes
 MAX_MB_PETICION = _entero("MAX_MB_PETICION", 32)            # Cloud Run tampoco acepta más de 32 MB
-CUPO_SUBIDAS_DIA = _entero("CUPO_SUBIDAS_DIA", 300)          # URLs de subida por usuario en 24 h
+CUPO_SUBIDAS_DIA = _entero("CUPO_SUBIDAS_DIA", 100)          # URLs de subida por usuario en 24 h
+# Tamaño máximo por archivo (12-11-2026): el mayor real es 1,1 MB (certificados); 10 MB cubre fotos del celular
+MAX_MB_ARCHIVO = _entero("MAX_MB_ARCHIVO", 10)
 EXCESOS_PARA_BLOQUEO = 3                                    # veces que supera el límite antes de bloquear
 BLOQUEO_CORTO = 15 * 60
 BLOQUEO_LARGO = 24 * 3600

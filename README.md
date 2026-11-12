@@ -47,7 +47,7 @@ Una API propia que concentra el trabajo del área y aplica sus reglas: quién pu
 - Registrar **análisis de laboratorio** comparando cada parámetro con su límite, leyendo el informe del laboratorio.
 - Calcular la **huella de carbono** y comparar temporadas al mismo período.
 - Generar la **carpeta para el auditor** con la evidencia vigente.
-- Dejar cada cambio de negocio en la **bitácora** (usuario, fecha y hora).
+- Dejar cada cambio de negocio en el **historial** (usuario, fecha y hora).
 
 ---
 
@@ -63,44 +63,42 @@ Una API propia que concentra el trabajo del área y aplica sus reglas: quién pu
 ## Arquitectura
 
 ```
-Aplicación React (Firebase Hosting)
-        │  HTTPS · /api
+Aplicación web React (PWA)
+        │  HTTPS · JSON · JWT
         ▼
-API FastAPI (Cloud Run, southamerica-west1)  ──►  Cloud Storage (archivos, URLs firmadas)
-        │  IP privada
+API FastAPI (contenedor en Google Cloud Run)  ──►  Cloud Storage (archivos privados, URLs firmadas)
+        │
         ▼
-Cloud SQL (lahornilla_base_normalizada)
-   ├── tablas propias:     certificaciones_dim_* · certificaciones_fact_* · certificaciones_pivot_* · vistas v_certificaciones_*
-   └── tablas compartidas: general_dim_empresa · general_dim_sucursal · general_dim_sucursaltipo · general_dim_temporada
-                           general_dim_usuario · general_dim_app · usuario_dim_permiso · usuario_pivot_* (portal web)
+MySQL en Cloud SQL (tablas propias + tablas compartidas de la empresa, solo lectura)
 ```
 
 - La API es la **única** que se conecta a la base: la aplicación le pide todo a la API.
-- Los archivos (PDF, fotos de evidencia, Word, planillas) no se guardan en la base: van a Cloud Storage y la tabla guarda solo su referencia.
-- Cada cambio de negocio queda en la bitácora.
+- Los archivos (PDF, fotos de evidencia, Word, planillas) no se guardan en la base: el navegador los sube y descarga directo desde Cloud Storage con enlaces firmados de pocos minutos, y la tabla guarda solo su referencia.
+- Despliegue continuo: cada cambio en la rama principal se compila y publica automáticamente en Cloud Run.
 
 ### Modelo de datos
 
-| Tipo | Prefijo | Qué guarda |
-|---|---|---|
-| Dimensión | `certificaciones_dim_*` | Catálogos y entidades que cambian poco: normas y sus versiones, puntos de control, plantillas, tipos de análisis, conceptos ambientales |
-| Hecho | `certificaciones_fact_*` | Lo que ocurre en el tiempo: auditorías, respuestas, no conformidades, registros, análisis, consumos y reciclaje, bitácora |
-| Puente | `certificaciones_pivot_sucursal_protocolo` | Única relación muchos a muchos: qué normas tiene cada sucursal |
-| Vista | `v_certificaciones_*` | Temporadas desde 2024, vencimientos, huella y análisis por temporada, estado de las NC y tablero |
+| Tipo | Qué guarda |
+|---|---|
+| Dimensiones | Catálogos que cambian poco: normas y sus versiones, puntos de control, plantillas, tipos de análisis, conceptos ambientales |
+| Hechos | Lo que ocurre en el tiempo: auditorías, respuestas, no conformidades, registros, análisis, consumos, reciclaje e historial de cambios |
+| Puente | Qué normas aplican a cada sucursal |
+| Vistas | Temporadas, vencimientos, huella y análisis por temporada, estado de las no conformidades y tablero |
 
-- **Tablas compartidas de la empresa**: empresas, sucursales (con su empresa y su tipo: campo, packing…), temporadas (mayo a abril, por empresa) y usuarios se leen de las tablas que ya existen en la base de La Hornilla. Certificaciones nunca las modifica.
-- **Acceso y permisos**: los da el portal web. El usuario entra con su usuario o correo y clave (como en LH Inventario), necesita acceso a la app y ve solo sus sucursales. Qué módulos ve y cuáles edita sale de sus permisos: `<MÓDULO>_VER` o `<MÓDULO>_EDITAR` para `REGISTROS`, `NC`, `LABORATORIO` y `AMBIENTE`, más `AUDITORIAS_VER` y `DOCUMENTOS_VER` (`utils/auth.py`: `requiere_ver`, `requiere_permiso`). `CERTIFICACIONES_ADMIN` ve y edita todo; `CERTIFICACIONES_VER` ve todo sin editar. El historial completo de cambios (`/historial`) lo ve solo quien tiene `CERTIFICACIONES_HISTORIAL`, que se asigna aparte: `CERTIFICACIONES_ADMIN` no basta.
+- **Datos compartidos de la empresa** (empresas, sucursales, temporadas y usuarios) se leen de las tablas que ya existen; esta API nunca las modifica.
+- **Acceso y permisos** se administran en el portal web de la empresa: cada usuario necesita acceso a la aplicación, ve solo sus sucursales y, por módulo, puede ver o editar según sus permisos. El historial completo de cambios requiere un permiso aparte.
 - **Temporada**: no se guarda en cada dato; se deduce de su fecha y de la empresa de la sucursal.
-- Diagrama, tablas y script de creación: `docs/modelo-datos/` (carpeta del proyecto, fuera de este repositorio) y `migrations/`.
 
 ---
 
 ## Seguridad
 
-- **Acceso:** usuario o correo + clave del portal web, contraseñas con bcrypt y tokens JWT de acceso y de refresco separados. Cada usuario ve solo sus sucursales y edita solo los módulos que su permiso le da.
-- **Contra el abuso:** límite de peticiones por IP (más estricto para subidas, PDF, Word, ZIP y lectura de informes), bloqueo escalonado de la IP que insiste (15 min y luego 24 h), listas de IPs permitidas y bloqueadas, y pausa del inicio de sesión ante intentos fallidos por IP y por cuenta. La IP se toma de la que agrega Google en Cloud Run, no de la que pueda inventar el cliente.
-- **Archivos:** Cloud Storage privado con URLs firmadas de pocos minutos; el tamaño máximo va firmado en la URL de subida, y solo se aceptan PDF, imágenes, Word y Excel.
-- **Producción:** sin documentación pública de la API, sin modo demo, cabeceras de seguridad (HSTS incluido), errores sin detalles internos y todo cambio de datos en la bitácora.
+- **Acceso:** usuario o correo + clave, contraseñas con bcrypt y tokens JWT de acceso y de refresco separados. Los permisos se validan en la API en cada petición, no solo en la interfaz.
+- **Inicio de sesión:** pausa ante intentos fallidos por IP y por cuenta, y tiempo de respuesta constante, para que medir la demora no revele si un usuario existe o si una clave estuvo cerca.
+- **Contra el abuso y los costos:** límite de peticiones por IP y por usuario (más estricto para lo pesado), bloqueo escalonado de quien insiste, cupo diario y tamaño máximo por archivo firmados en el enlace de subida, y rechazo de peticiones sin tamaño declarado.
+- **Archivos:** almacenamiento privado, enlaces firmados de pocos minutos y solo PDF, imágenes, Word y Excel.
+- **Producción:** sin documentación pública de la API, credenciales en un gestor de secretos, CORS solo para el dominio de la aplicación, cabeceras de seguridad y errores sin detalles internos.
+- **Pruebas automáticas** de permisos, sesión, límites y protecciones.
 
 ---
 
@@ -117,7 +115,7 @@ Cloud SQL (lahornilla_base_normalizada)
 | ⚠️ No conformidades | Hallazgos, análisis de causa, acciones, evidencia, revisión, cierre y reincidencias |
 | 🧪 Laboratorio | Análisis de agua, suelo, hoja, fruta y residuos frente a sus límites; residuos (MRL) contra los límites de ASOEX por país de destino |
 | 🌿 Medio ambiente | Consumos, reciclaje, huella de carbono y comparativa de temporadas |
-| 📊 Tablero y bitácora | Indicadores de inicio, semáforo por protocolo e historial de cambios |
+| 📊 Tablero e historial | Indicadores de inicio, semáforo por protocolo e historial de cambios |
 | 🗂️ Carpeta auditor | Evidencia vigente reunida para una auditoría externa |
 
 ---
@@ -145,7 +143,8 @@ API-CERTIFICACIONES/
 ├── utils/
 │   ├── modelos.py             # Tablas propias y compartidas
 │   ├── auth.py                # Sesión (JWT), acceso a la app y permisos por módulo y sucursal
-│   ├── temporadas.py          # Temporadas por empresa desde general_dim_temporada
+│   ├── proteccion.py          # Límites de peticiones, bloqueos y cupos contra abuso
+│   ├── temporadas.py          # Temporadas por empresa
 │   ├── almacenamiento.py      # Archivos en Cloud Storage
 │   ├── analizar_documento.py  # Qué documento es un archivo subido y con qué completarlo
 │   ├── leer_certificado.py    # Ficha de un certificado desde su PDF
@@ -162,15 +161,9 @@ API-CERTIFICACIONES/
 └── tests/                     # Pruebas con datos ficticios
 ```
 
-La API se construyó sobre la estructura de **API-BASE-LH**, el repositorio base de las APIs de La Hornilla: ahí está cómo se organiza y funciona una API de la empresa.
-
----
-
 ## Frontend
 
-Esta API la consume la aplicación web en **React**, desplegada en **Firebase Hosting**.
-
-➡️ Repositorio de la aplicación: [LH-CERTIFICACIONES](https://github.com/Straaizo/LH-CERTIFICACIONES)
+Esta API la consume una aplicación web en **React + TypeScript** (instalable como app en el celular), desplegada en **Firebase Hosting**.
 
 ---
 

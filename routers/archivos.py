@@ -6,14 +6,14 @@ from config import Config
 from utils import almacenamiento
 from utils.auth import puede_escribir
 from utils.modelos import Usuario
-from utils.proteccion import CUPO_SUBIDAS_DIA, consumir_cupo_subida
+from utils.proteccion import CUPO_SUBIDAS_DIA, MAX_MB_ARCHIVO, consumir_cupo_subida
 
 router = APIRouter()
 
 PREFIJOS = {"documentos", "analisis", "evidencias", "registros"}
 TIPOS_PERMITIDOS = ("application/pdf", "image/", "application/vnd.openxmlformats", "application/vnd.ms-excel",
                     "application/msword")
-MAX_BYTES = 30 * 1024 * 1024
+MAX_BYTES = MAX_MB_ARCHIVO * 1024 * 1024
 
 
 class SolicitudSubida(BaseModel):

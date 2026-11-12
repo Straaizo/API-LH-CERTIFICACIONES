@@ -12,6 +12,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
 from utils import almacenamiento
+from utils.proteccion import MAX_MB_ARCHIVO
 from utils.auth import solo_certificaciones
 from utils.historial import registrar
 from utils.duplicados import error_duplicado, existente
@@ -27,7 +28,7 @@ from utils.texto import nombre_archivo_seguro
 
 router = APIRouter(prefix="/auditorias-externas")
 
-MAX_ARCHIVO = 30 * 1024 * 1024
+MAX_ARCHIVO = MAX_MB_ARCHIVO * 1024 * 1024
 PREFIJO = re.compile(r"^(fundo|campo|packing|planta|huerto|empaque)\s+", re.IGNORECASE)
 
 

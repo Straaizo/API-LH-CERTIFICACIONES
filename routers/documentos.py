@@ -365,7 +365,7 @@ def _avisar_repetido(db: Session, nombre: str, documento: Documento | None = Non
 
 @router.post("/documentos", status_code=201)
 def crear(datos: DocumentoEntrada, permitir_repetido: bool = False, usuario: Usuario = Depends(solo_certificaciones),
-          db: Session = Depends(get_db)) -> dict:
+          db: Session = Depends(get_db), temporada: TemporadaLogica = Depends(temporada_seleccionada)) -> dict:
     """Los documentos fijos los sube certificaciones; no van por sucursal sino por sección."""
     if not permitir_repetido:
         _avisar_repetido(db, datos.version.nombre_archivo)

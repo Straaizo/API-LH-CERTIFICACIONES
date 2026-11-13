@@ -96,6 +96,17 @@ async def security_headers_middleware(request: Request, call_next):
 # Límite de peticiones por IP, listas de IPs y tamaño máximo (utils/proteccion.py)
 app.middleware("http")(middleware_proteccion)
 
+
+# Errores no manejados dentro de CORS: así el navegador recibe un 500 legible y no un "no se pudo conectar"
+# (el manejador global de Exception corre fuera de CORS y su respuesta sale sin cabeceras CORS)
+@app.middleware("http")
+async def errores_internos_middleware(request: Request, call_next):
+    try:
+        return await call_next(request)
+    except Exception:
+        logger.exception("Error no manejado en %s", request.url.path)
+        return JSONResponse(status_code=500, content={"detail": "Error interno del servidor"})
+
 # ── CORS ──────────────────────────────────────────────────────────────────────
 # Solo orígenes permitidos (ORIGENES_PERMITIDOS en .env / Secret Manager)
 app.add_middleware(

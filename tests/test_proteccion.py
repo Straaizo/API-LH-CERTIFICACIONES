@@ -125,3 +125,19 @@ def test_purga_de_contadores_viejos():
     p._ultima_purga = 0.0
     p.evaluar("6.6.6.6", "/api/x", ahora=100.0 + p.PURGA_CADA + 120)
     assert "7.7.7.7" not in p._estado and "6.6.6.6" in p._estado
+
+
+def test_error_interno_llega_con_cors(monkeypatch):
+    """Un error no manejado responde 500 con cabeceras CORS (el navegador muestra el error, no "sin conexión")."""
+    from fastapi import APIRouter
+    from main import app
+    router = APIRouter()
+
+    @router.get("/api/__prueba_error")
+    def falla():
+        raise RuntimeError("falla de prueba")
+    app.include_router(router)
+    r = TestClient(app, raise_server_exceptions=False).get(
+        "/api/__prueba_error", headers={"Origin": "https://certificaciones-ea86d.web.app"})
+    assert r.status_code == 500 and r.json()["detail"] == "Error interno del servidor"
+    assert r.headers.get("access-control-allow-origin") == "https://certificaciones-ea86d.web.app"

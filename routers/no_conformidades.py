@@ -112,7 +112,8 @@ def listar(empresa_id: int | None = None, unidad_id: int | None = None, temporad
     if not es_certificaciones(usuario):
         # El jefe de campo o área ve las no conformidades cuando se emite el informe de la auditoría
         consulta = consulta.where(Auditoria.emitida_en.is_not(None))
-    consulta = filtrar_temporada(db, consulta, temporada_id, NoConformidad.fecha_deteccion, NoConformidad.unidad_id)
+    consulta = filtrar_temporada(db, consulta, temporada_id, NoConformidad.fecha_deteccion, NoConformidad.unidad_id,
+                                 NoConformidad.temporada)
     if protocolo_id:
         consulta = consulta.where(Auditoria.version_id.in_(
             select(VersionNorma.id).where(VersionNorma.protocolo_id == protocolo_id)))

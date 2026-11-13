@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session, selectinload
 
 from utils.auth import AMBIENTE, requiere_permiso, requiere_ver, solo_certificaciones, usuario_actual, ve_todo, verificar_unidad
 from utils.historial import registrar
-from utils.comunes import filtrar_temporada, filtrar_unidades, obtener, unidad_dict
+from utils.comunes import filtrar_temporada, filtrar_unidades, obtener, temporada_al_guardar, temporada_seleccionada, unidad_dict
 from utils.db import get_db
 from utils.informe_ambiente import informe_pdf
 from utils.modelos import ConceptoAmbiental, Empresa, FactorEmision, RegistroAmbiental, Unidad, Usuario
@@ -65,7 +65,8 @@ def _registros(db: Session, usuario: Usuario, empresa_id, unidad_id, temporada_i
     consulta = consulta.where((ConceptoAmbiental.categoria == RECICLAJE) if reciclaje
                               else (ConceptoAmbiental.categoria != RECICLAJE))
     consulta = filtrar_unidades(consulta, RegistroAmbiental.unidad_id, usuario, empresa_id, unidad_id)
-    return filtrar_temporada(db, consulta, temporada_id, RegistroAmbiental.fecha, RegistroAmbiental.unidad_id)
+    return filtrar_temporada(db, consulta, temporada_id, RegistroAmbiental.fecha, RegistroAmbiental.unidad_id,
+                             RegistroAmbiental.temporada)
 
 
 @router.get("/conceptos")
@@ -99,14 +100,16 @@ def listar_consumos(empresa_id: int | None = None, unidad_id: int | None = None,
 
 @router.post("/consumos", status_code=201)
 def crear_consumo(datos: ConsumoEntrada, usuario: Usuario = Depends(requiere_permiso(AMBIENTE)),
-                  db: Session = Depends(get_db)) -> dict:
+                  db: Session = Depends(get_db), temporada: TemporadaLogica = Depends(temporada_seleccionada)) -> dict:
     verificar_unidad(usuario, datos.unidad_id)
     concepto = next((c for c in _conceptos_consumo(db, usuario) if c.codigo == datos.concepto), None)
     if concepto is None:
         raise HTTPException(400, "Concepto inválido")
     _validar_fecha(db, datos.fecha, datos.unidad_id)
     registro = RegistroAmbiental(unidad_id=datos.unidad_id, concepto_id=concepto.id, fecha=datos.fecha,
-                                 cantidad=datos.cantidad, creado_por_id=usuario.id)
+                                 cantidad=datos.cantidad, creado_por_id=usuario.id,
+                                 temporada=temporada_al_guardar(db, temporada, datos.fecha,
+                                                                obtener(db, Unidad, datos.unidad_id).empresa_id))
     db.add(registro)
     db.flush()
     registrar(db, usuario, "crear", "consumo", registro.id, datos.model_dump(mode="json", exclude={"unidad_medida"}))
@@ -124,14 +127,16 @@ def listar_reciclaje(empresa_id: int | None = None, unidad_id: int | None = None
 
 @router.post("/reciclaje", status_code=201)
 def crear_reciclaje(datos: ReciclajeEntrada, usuario: Usuario = Depends(solo_certificaciones),
-                    db: Session = Depends(get_db)) -> dict:
+                    db: Session = Depends(get_db), temporada: TemporadaLogica = Depends(temporada_seleccionada)) -> dict:
     verificar_unidad(usuario, datos.unidad_id)
     material = obtener(db, ConceptoAmbiental, datos.material_id)
     if material.categoria != RECICLAJE:
         raise HTTPException(400, "Material de reciclaje inválido")
     _validar_fecha(db, datos.fecha, datos.unidad_id)
     registro = RegistroAmbiental(unidad_id=datos.unidad_id, concepto_id=material.id, fecha=datos.fecha,
-                                 cantidad=datos.kilos, creado_por_id=usuario.id)
+                                 cantidad=datos.kilos, creado_por_id=usuario.id,
+                                 temporada=temporada_al_guardar(db, temporada, datos.fecha,
+                                                                obtener(db, Unidad, datos.unidad_id).empresa_id))
     db.add(registro)
     db.flush()
     registrar(db, usuario, "crear", "reciclaje", registro.id, datos.model_dump(mode="json"))

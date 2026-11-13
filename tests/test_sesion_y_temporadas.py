@@ -5,7 +5,7 @@ from datetime import date
 import bcrypt
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine, insert
+from sqlalchemy import create_engine, insert, select
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
@@ -125,6 +125,17 @@ def test_temporadas_por_empresa(sesion):
     assert sesion.scalar(select(condicion)) == 0
 
 
+def test_solo_temporada_en_curso_y_anterior(sesion):
+    """24-25 queda fuera aunque tenga fechas, y una temporada futura ya cargada no aparece hasta que empiece."""
+    sesion.add_all([Temporada(id=6, temporada="24-25", empresa_id=1, inicio=date(2024, 5, 1), fin=date(2025, 4, 30)),
+                    Temporada(id=7, temporada="27-28", empresa_id=1, inicio=date(2027, 5, 1), fin=date(2028, 4, 30))])
+    sesion.flush()
+    sesion.info.pop("temporadas", None)
+    assert [t.nombre for t in listar_temporadas(sesion, hoy=date(2026, 11, 13))] == ["26-27", "25-26"]
+    sesion.info.pop("temporadas", None)
+    assert [t.nombre for t in listar_temporadas(sesion, hoy=date(2027, 6, 1))] == ["27-28", "26-27"]
+
+
 def test_modulos_visibles_por_permiso(sesion):
     """Ver un módulo: su _VER o _EDITAR; ADMIN y CERTIFICACIONES_VER ven todos. El permiso de otra app no cuenta."""
     from utils.auth import modulos_visibles, puede_ver, ve_todo
@@ -165,3 +176,45 @@ def test_nombres_del_portal_se_traducen_a_codigos():
     assert modulos_visibles(u) == ["REGISTROS", "DOCUMENTOS", "NC"] and puede_ver(u, "NC")
     assert u.rol == "encargado"
     assert all(len(n) <= 45 for n in NOMBRES_PERMISO)
+
+
+def test_temporada_al_guardar_valida_contra_la_fecha(sesion):
+    """Se guarda la temporada seleccionada arriba solo si la fecha del dato es de esa temporada."""
+    from fastapi import HTTPException
+    from utils.temporadas import buscar_temporada, temporada_al_guardar
+    t2627, t2526 = buscar_temporada(sesion, 2026), buscar_temporada(sesion, 2025)
+    # Fecha de 26-27 con 26-27 seleccionada: se guarda "26-27"
+    assert temporada_al_guardar(sesion, t2627, date(2026, 10, 1), 1) == "26-27"
+    # Fecha de 25-26 (octubre 2025) con 26-27 seleccionada: no deja guardar y dice qué temporada elegir
+    with pytest.raises(HTTPException) as error:
+        temporada_al_guardar(sesion, t2627, date(2025, 10, 15), 1)
+    assert error.value.status_code == 400 and "es de la temporada 25-26" in error.value.detail
+    assert "Cambia la temporada arriba a 25-26" in error.value.detail
+    # Al revés también se bloquea
+    with pytest.raises(HTTPException):
+        temporada_al_guardar(sesion, t2526, date(2026, 10, 1), 1)
+    # Sin fecha (un registro cargado después): queda en la seleccionada
+    assert temporada_al_guardar(sesion, t2526, None, 1) == "25-26"
+    # La misma fecha puede ser de otra temporada según la empresa (VS cambia en junio)
+    assert temporada_al_guardar(sesion, t2526, date(2026, 5, 15), 2) == "25-26"
+
+
+def test_consumo_guarda_la_temporada_seleccionada(cliente, sesion):
+    """De punta a punta: la API usa la temporada de la cabecera X-Temporada, la valida y la guarda en la fila."""
+    from utils.modelos import ConceptoAmbiental, RegistroAmbiental
+    sesion.add(ConceptoAmbiental(codigo="combustible_diesel", nombre="Diésel", categoria="combustible",
+                                 unidad_medida="L", activo=True))
+    sesion.commit()
+    token = cliente.post("/api/auth/login", json={"usuario": "ladmin", "clave": CLAVE}).json()["access_token"]
+    cabeceras = {"Authorization": f"Bearer {token}"}
+    cuerpo = {"unidad_id": 105, "fecha": "2025-10-15", "concepto": "combustible_diesel", "cantidad": 120}
+    # Octubre 2025 con 26-27 seleccionada: rechazado con el motivo
+    r = cliente.post("/api/ambiente/consumos", json=cuerpo, headers=cabeceras | {"X-Temporada": "2026"})
+    assert r.status_code == 400 and "es de la temporada 25-26" in r.json()["detail"]
+    # Con 25-26 seleccionada: se guarda con su temporada
+    r = cliente.post("/api/ambiente/consumos", json=cuerpo, headers=cabeceras | {"X-Temporada": "2025"})
+    assert r.status_code == 201, r.text
+    assert [g.temporada for g in sesion.scalars(select(RegistroAmbiental))] == ["25-26"]
+    # Y el filtro por temporada lo encuentra en 25-26 y no en 26-27
+    assert len(cliente.get("/api/ambiente/consumos", params={"temporada_id": 2025}, headers=cabeceras).json()) == 1
+    assert cliente.get("/api/ambiente/consumos", params={"temporada_id": 2026}, headers=cabeceras).json() == []

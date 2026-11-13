@@ -28,6 +28,7 @@ def sincronizar_nc(db: Session, auditoria: Auditoria, respuesta: Respuesta) -> N
             nc = NoConformidad(
                 auditoria_id=auditoria.id, respuesta_id=respuesta.id, requisito_id=respuesta.requisito_id,
                 unidad_id=auditoria.unidad_id, area_id=respuesta.area_id, fecha_deteccion=auditoria.fecha,
+                temporada=auditoria.temporada,
                 descripcion=respuesta.comentario or "Sin descripción", estado="abierta",
             )
             db.add(nc)

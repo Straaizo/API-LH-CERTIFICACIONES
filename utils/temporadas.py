@@ -2,7 +2,8 @@
 
 La API agrupa por nombre ('25-26'): el id que ve el frontend es el año de inicio (2025).
 Una fecha pertenece a la temporada según el rango de la empresa de su sucursal.
-Solo se usan las temporadas con fechas desde 2024 (las anteriores no las tienen).
+Solo se usan las temporadas con fechas desde 2024 (las anteriores no las tienen) y, de ellas, la que está en curso
+y la anterior (decisión del 13-11-2026): lo de la anterior sirve para comparar. Cada mayo avanza sola.
 """
 from dataclasses import dataclass, field
 from datetime import date
@@ -14,6 +15,7 @@ from sqlalchemy.orm import Session
 from utils.modelos import Temporada, Unidad
 
 DESDE = date(2024, 1, 1)
+TEMPORADAS_VISIBLES = 2  # la en curso y la anterior
 
 
 @dataclass
@@ -38,16 +40,19 @@ class TemporadaLogica:
         return inicio <= fecha <= fin
 
 
-def listar_temporadas(db: Session) -> list[TemporadaLogica]:
-    """De la más reciente a la más antigua. Se calcula una vez por sesión."""
+def listar_temporadas(db: Session, hoy: date | None = None) -> list[TemporadaLogica]:
+    """La en curso y la anterior, de la más reciente a la más antigua. Se calcula una vez por sesión."""
     if "temporadas" not in db.info:
+        hoy = hoy or date.today()
         filas = db.scalars(select(Temporada).where(Temporada.inicio >= DESDE, Temporada.fin.is_not(None)))
         por_nombre: dict[str, TemporadaLogica] = {}
         for f in filas:
             t = por_nombre.setdefault(f.temporada, TemporadaLogica(id=f.inicio.year, nombre=f.temporada))
             t.id = min(t.id, f.inicio.year)
             t.rangos[f.empresa_id] = (f.inicio, f.fin)
-        db.info["temporadas"] = sorted(por_nombre.values(), key=lambda t: t.id, reverse=True)
+        # Las que ya empezaron (no las futuras ya cargadas en la tabla), de la más reciente: en curso y anterior
+        iniciadas = [t for t in por_nombre.values() if t.inicio <= hoy]
+        db.info["temporadas"] = sorted(iniciadas, key=lambda t: t.id, reverse=True)[:TEMPORADAS_VISIBLES]
     return db.info["temporadas"]
 
 
@@ -88,6 +93,36 @@ def en_temporada(t: TemporadaLogica | None, columna_fecha, columna_unidad) -> Co
              columna_fecha.between(inicio, fin))
         for empresa_id, (inicio, fin) in t.rangos.items()
     ))
+
+
+def temporada_elegida(db: Session, valor: str | None) -> TemporadaLogica:
+    """La temporada seleccionada arriba en la app (cabecera X-Temporada, su id: año de inicio); sin ella, la actual."""
+    t = buscar_temporada(db, int(valor)) if valor and valor.strip().isdigit() else None
+    t = t or temporada_actual(db) or next(iter(listar_temporadas(db)), None)
+    if t is None:
+        raise HTTPException(400, "No hay temporadas disponibles")
+    return t
+
+
+def temporada_al_guardar(db: Session, elegida: TemporadaLogica, fecha: date | None, empresa_id: int | None) -> str:
+    """Nombre de temporada a guardar. Si el dato tiene fecha, debe ser de la temporada elegida; si no, no se guarda."""
+    if fecha:
+        de_la_fecha = temporada_para_fecha(db, fecha, empresa_id)
+        if de_la_fecha is None:
+            habilitadas = " y ".join(t.nombre for t in listar_temporadas(db))
+            raise HTTPException(400, f"La fecha {fecha:%d-%m-%Y} no pertenece a las temporadas habilitadas ({habilitadas}).")
+        if de_la_fecha.id != elegida.id:
+            raise HTTPException(400, f"La fecha {fecha:%d-%m-%Y} es de la temporada {de_la_fecha.nombre}. "
+                                     f"Cambia la temporada arriba a {de_la_fecha.nombre} y vuelve a subirlo.")
+    return elegida.nombre
+
+
+def en_temporada_guardada(t: TemporadaLogica | None, columna_temporada, columna_fecha, columna_unidad) -> ColumnElement[bool]:
+    """Por la temporada guardada; lo cargado antes de existir la columna (vacía) se ubica por su fecha."""
+    if t is None:
+        return false()
+    return or_(columna_temporada == t.nombre,
+               and_(columna_temporada.is_(None), en_temporada(t, columna_fecha, columna_unidad)))
 
 
 def temporada_dict(t: TemporadaLogica | None) -> dict | None:

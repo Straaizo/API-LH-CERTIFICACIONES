@@ -16,7 +16,7 @@ from utils.proteccion import MAX_MB_ARCHIVO
 from utils.auth import solo_certificaciones
 from utils.historial import registrar
 from utils.duplicados import error_duplicado, existente
-from utils.comunes import obtener, unidad_dict
+from utils.comunes import TemporadaLogica, obtener, temporada_al_guardar, temporada_seleccionada, unidad_dict
 from utils.db import get_db
 from utils.exportar_auditoria_externa import resumen_docx, resumen_pdf
 from utils.hora import ahora
@@ -162,7 +162,8 @@ def _reemplazar_version(db: Session, version: AuditoriaExternaVersion, contenido
             "tipo_nombre": TIPOS.get(auditoria.tipo_informe), "advertencias": lectura.advertencias, "reemplazada": True}
 
 
-def registrar_informe(db: Session, contenido: bytes, nombre: str, usuario: Usuario) -> dict:
+def registrar_informe(db: Session, contenido: bytes, nombre: str, usuario: Usuario,
+                      temporada: TemporadaLogica | None = None) -> dict:
     """Lee el PDF y lo guarda: auditoría nueva o, si ya existe (mismo ID de la certificadora, tipo y norma), versión nueva."""
     lectura = leer_auditoria_externa(contenido, nombre)
     protocolo = db.scalar(select(Protocolo).where(Protocolo.codigo == lectura.protocolo)) if lectura.protocolo else None
@@ -182,6 +183,8 @@ def registrar_informe(db: Session, contenido: bytes, nombre: str, usuario: Usuar
             titulo=_titulo(protocolo, [u for u in unidades if u.id in sucursales_auditadas], db, lectura.fecha_inicio,
                            empresa.id if empresa else None),
             creado_por_id=usuario.id,
+            temporada=temporada_al_guardar(db, temporada, lectura.fecha_inicio, empresa.id if empresa else None)
+            if temporada else None,
         )
         db.add(auditoria)
         nueva = True
@@ -195,7 +198,8 @@ def registrar_informe(db: Session, contenido: bytes, nombre: str, usuario: Usuar
 
 @router.post("", status_code=201)
 async def subir(archivos: list[UploadFile] = File(...), reemplazar: bool = Form(False),
-                usuario: Usuario = Depends(solo_certificaciones), db: Session = Depends(get_db)) -> list[dict]:
+                usuario: Usuario = Depends(solo_certificaciones), db: Session = Depends(get_db),
+                temporada: TemporadaLogica = Depends(temporada_seleccionada)) -> list[dict]:
     """Sube uno o varios informes; cada uno se lee y se guarda solo, sin campos que llenar.
     Si un PDF ya está subido (mismo nombre), avisa; con reemplazar=true reemplaza esa versión."""
     leidos = []
@@ -217,7 +221,7 @@ async def subir(archivos: list[UploadFile] = File(...), reemplazar: bool = Form(
         if nombre in repetidas:
             resultados.append(_reemplazar_version(db, repetidas[nombre], contenido, nombre, usuario))
         else:
-            resultados.append(registrar_informe(db, contenido, nombre, usuario))
+            resultados.append(registrar_informe(db, contenido, nombre, usuario, temporada))
     db.commit()
     return resultados
 

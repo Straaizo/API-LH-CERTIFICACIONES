@@ -11,7 +11,9 @@ from utils.proteccion import MAX_MB_ARCHIVO
 from utils.auth import LABORATORIO, requiere_permiso, requiere_ver, verificar_unidad
 from utils.historial import registrar
 from utils.duplicados import error_duplicado, existente
-from utils.comunes import filtrar_temporada, filtrar_unidades, obtener, unidad_dict
+from utils.comunes import (
+    TemporadaLogica, filtrar_temporada, filtrar_unidades, obtener, temporada_al_guardar, temporada_seleccionada, unidad_dict,
+)
 from utils.db import get_db
 from utils.mrl import comparar, fruta_de_especie, leer_informe_mrl
 from utils.importar_asoex import fecha_en_nombre, leer_asoex, normalizar
@@ -89,7 +91,8 @@ def listar(empresa_id: int | None = None, unidad_id: int | None = None, temporad
     consulta = filtrar_unidades(
         select(Analisis).options(selectinload(Analisis.resultados), selectinload(Analisis.tipo)),
         Analisis.unidad_id, usuario, empresa_id, unidad_id)
-    consulta = filtrar_temporada(db, consulta, temporada_id, Analisis.fecha_muestreo, Analisis.unidad_id)
+    consulta = filtrar_temporada(db, consulta, temporada_id, Analisis.fecha_muestreo, Analisis.unidad_id,
+                                 Analisis.temporada)
     if tipo_analisis_id:
         consulta = consulta.where(Analisis.tipo_analisis_id == tipo_analisis_id)
     if tipo_unidad in ("campo", "planta"):
@@ -101,9 +104,11 @@ def listar(empresa_id: int | None = None, unidad_id: int | None = None, temporad
 
 @router.post("/analisis", status_code=201)
 def crear(datos: AnalisisEntrada, reemplazar: bool = False, usuario: Usuario = Depends(requiere_permiso(LABORATORIO)),
-          db: Session = Depends(get_db)) -> dict:
+          db: Session = Depends(get_db), temporada: TemporadaLogica = Depends(temporada_seleccionada)) -> dict:
     """Si ya hay un análisis de esa sucursal con el mismo informe, avisa; con reemplazar=true lo reemplaza."""
     verificar_unidad(usuario, datos.unidad_id)
+    nombre_temporada = temporada_al_guardar(db, temporada, datos.fecha_muestreo,
+                                            obtener(db, Unidad, datos.unidad_id).empresa_id)
     misma_muestra = (Analisis.tipo_analisis_id == datos.tipo_analisis_id) & (Analisis.fecha_muestreo == datos.fecha_muestreo) \
         & (func.coalesce(Analisis.punto, "") == (datos.punto or "").strip()) \
         & (func.coalesce(Analisis.fuente_agua_id, 0) == (datos.fuente_agua_id or 0))
@@ -134,7 +139,7 @@ def crear(datos: AnalisisEntrada, reemplazar: bool = False, usuario: Usuario = D
 
     limites = {lp.parametro.lower(): lp for lp in
                db.scalars(select(LimiteParametro).where(LimiteParametro.tipo_analisis_id == tipo.id))}
-    analisis = Analisis(**datos.model_dump(exclude={"resultados"}), creado_por_id=usuario.id)
+    analisis = Analisis(**datos.model_dump(exclude={"resultados"}), creado_por_id=usuario.id, temporada=nombre_temporada)
     for r in datos.resultados:
         ref = limites.get(r.parametro.lower())
         # El límite se copia al resultado: un cambio de norma no altera el histórico

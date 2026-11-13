@@ -13,7 +13,9 @@ from utils.auth import (
     REGISTROS, es_certificaciones, requiere_permiso, requiere_ver, solo_certificaciones, verificar_unidad,
 )
 from utils.historial import registrar
-from utils.comunes import filtrar_temporada, filtrar_unidades, obtener, unidad_dict
+from utils.comunes import (
+    TemporadaLogica, filtrar_temporada, filtrar_unidades, obtener, temporada_al_guardar, temporada_seleccionada, unidad_dict,
+)
 from utils.db import get_db
 from utils.exportar_registro import a_pdf, a_word
 from utils.importar_plantilla_word import leer_plantilla_word
@@ -383,7 +385,8 @@ def listar(empresa_id: int | None = None, unidad_id: int | None = None, temporad
            estado: str | None = None, plantilla_id: str | None = None, usuario: Usuario = Depends(requiere_ver("REGISTROS")),
            db: Session = Depends(get_db)) -> list[dict]:
     consulta = filtrar_unidades(select(Registro), Registro.unidad_id, usuario, empresa_id, unidad_id)
-    consulta = filtrar_temporada(db, consulta, temporada_id, func.date(Registro.creado_en), Registro.unidad_id)
+    consulta = filtrar_temporada(db, consulta, temporada_id, func.date(Registro.creado_en), Registro.unidad_id,
+                                 Registro.temporada)
     if estado:
         consulta = consulta.where(Registro.estado == estado)
     if plantilla_id:
@@ -393,7 +396,7 @@ def listar(empresa_id: int | None = None, unidad_id: int | None = None, temporad
 
 @router.post("", status_code=201)
 def crear(datos: RegistroEntrada, usuario: Usuario = Depends(solo_certificaciones),
-          db: Session = Depends(get_db)) -> dict:
+          db: Session = Depends(get_db), temporada: TemporadaLogica = Depends(temporada_seleccionada)) -> dict:
     plantilla = obtener(db, PlantillaRegistro, datos.plantilla_id)
     if not plantilla.activa:
         raise HTTPException(400, "La plantilla está desactivada")
@@ -406,7 +409,9 @@ def crear(datos: RegistroEntrada, usuario: Usuario = Depends(solo_certificacione
                         formato=plantilla.formato or {}, word_clave=plantilla.word_clave, campos=plantilla.campos,
                         valores=valores_iniciales(plantilla.campos, responsable),
                         responsable_id=datos.responsable_id,
-                        creado_por_id=usuario.id)
+                        creado_por_id=usuario.id,
+                        # Sin fecha propia: queda en la temporada seleccionada arriba (permite cargar registros pasados)
+                        temporada=temporada_al_guardar(db, temporada, None, unidad.empresa_id))
     db.add(registro)
     db.flush()
     registrar(db, usuario, "crear", "registro", registro.id, {"titulo": registro.titulo, "plantilla": plantilla.nombre})

@@ -18,7 +18,10 @@ from utils.auth import (
     puede_escribir, puede_ver, requiere_ver, solo_certificaciones, unidades_permitidas, usuario_actual, verificar_unidad,
 )
 from utils.historial import registrar
-from utils.comunes import dias_para, filtrar_temporada, filtrar_unidades, obtener, unidad_dict
+from utils.comunes import (
+    TemporadaLogica, dias_para, filtrar_temporada, filtrar_unidades, obtener, temporada_al_guardar, temporada_seleccionada,
+    unidad_dict,
+)
 from utils.duplicados import error_duplicado, existente
 from utils.db import get_db
 from utils.analizar_documento import analizar
@@ -185,14 +188,18 @@ def _historial_cert(datos: VersionEntrada) -> dict:
     return {"certificado": c.numero, "vence": str(datos.fecha_vencimiento)} if c else {}
 
 
-def _nueva_version(db: Session, doc: Documento, datos: VersionEntrada, usuario: Usuario) -> DocumentoVersion:
-    """Los documentos fijos no se aprueban: cada archivo subido queda guardado y pasa a ser la versión vigente."""
+def _nueva_version(db: Session, doc: Documento, datos: VersionEntrada, usuario: Usuario,
+                   temporada: TemporadaLogica) -> DocumentoVersion:
+    """Los documentos fijos no se aprueban: cada archivo subido queda guardado y pasa a ser la versión vigente.
+    Temporada: la seleccionada arriba; debe calzar con la emisión (o, en certificados, con el inicio de vigencia)."""
+    fecha = datos.fecha_emision or (datos.certificado.vigente_desde if datos.certificado else None)
+    nombre_temporada = temporada_al_guardar(db, temporada, fecha, doc.empresa_id)
     version = DocumentoVersion(
         documento_id=doc.id, numero=(doc.versiones[-1].numero + 1) if doc.versiones else 1,
         archivo_key=datos.archivo_key, nombre_archivo=datos.nombre_archivo, tipo_contenido=datos.tipo_contenido,
         version_texto=datos.version_texto, fecha_emision=datos.fecha_emision,
         fecha_vencimiento=datos.fecha_vencimiento, subido_por_id=usuario.id,
-        estado="aprobado", revisado_por_id=usuario.id, revisado_en=ahora(),
+        estado="aprobado", revisado_por_id=usuario.id, revisado_en=ahora(), temporada=nombre_temporada,
     )
     db.add(version)
     db.flush()
@@ -208,6 +215,7 @@ def _nueva_version(db: Session, doc: Documento, datos: VersionEntrada, usuario: 
             entidad_certificadora=c.entidad_certificadora, vigente_desde=c.vigente_desde,
             vigente_hasta=datos.fecha_vencimiento, fecha_auditoria=c.fecha_auditoria, resultado=c.resultado,
             productos=c.productos, unidad_id=unidades[0].id if len(unidades) == 1 else None,
+            temporada=nombre_temporada,
         ))
         db.flush()
     return version
@@ -372,7 +380,7 @@ def crear(datos: DocumentoEntrada, permitir_repetido: bool = False, usuario: Usu
     )
     db.add(doc)
     db.flush()
-    version = _nueva_version(db, doc, datos.version, usuario)
+    version = _nueva_version(db, doc, datos.version, usuario, temporada)
     registrar(db, usuario, "crear", "documento", doc.id, {"titulo": doc.titulo, "version": version.numero,
                                                           "seccion": doc.seccion, **_historial_cert(datos.version)})
     db.commit()
@@ -382,12 +390,13 @@ def crear(datos: DocumentoEntrada, permitir_repetido: bool = False, usuario: Usu
 
 @router.post("/documentos/{documento_id}/versiones", status_code=201)
 def agregar_version(documento_id: str, datos: VersionEntrada, permitir_repetido: bool = False,
-                    usuario: Usuario = Depends(solo_certificaciones), db: Session = Depends(get_db)) -> dict:
+                    usuario: Usuario = Depends(solo_certificaciones), db: Session = Depends(get_db),
+                    temporada: TemporadaLogica = Depends(temporada_seleccionada)) -> dict:
     doc = obtener(db, Documento, documento_id)
     if not permitir_repetido:
         _avisar_repetido(db, datos.nombre_archivo, doc, datos.archivo_key)
     _validar_version(doc.categoria, datos)
-    version = _nueva_version(db, doc, datos, usuario)
+    version = _nueva_version(db, doc, datos, usuario, temporada)
     registrar(db, usuario, "nueva_version", "documento", doc.id, {"version": version.numero, **_historial_cert(datos)})
     db.commit()
     db.refresh(doc)
@@ -424,7 +433,8 @@ def listar_capacitaciones(empresa_id: int | None = None, unidad_id: int | None =
                           temporada_id: int | None = None, usuario: Usuario = Depends(requiere_ver("DOCUMENTOS")),
                           db: Session = Depends(get_db)) -> list[dict]:
     consulta = filtrar_unidades(select(Capacitacion), Capacitacion.unidad_id, usuario, empresa_id, unidad_id)
-    consulta = filtrar_temporada(db, consulta, temporada_id, Capacitacion.fecha, Capacitacion.unidad_id)
+    consulta = filtrar_temporada(db, consulta, temporada_id, Capacitacion.fecha, Capacitacion.unidad_id,
+                                 Capacitacion.temporada)
     return [
         {"id": c.id, "tema": c.tema, "fecha": c.fecha, "relator": c.relator, "asistentes": c.asistentes or [],
          "vigente_hasta": c.vigente_hasta, "dias_para_vencer": dias_para(c.vigente_hasta),
@@ -435,11 +445,13 @@ def listar_capacitaciones(empresa_id: int | None = None, unidad_id: int | None =
 
 @router.post("/capacitaciones", status_code=201)
 def crear_capacitacion(datos: CapacitacionEntrada, usuario: Usuario = Depends(puede_escribir),
-                       db: Session = Depends(get_db)) -> dict:
+                       db: Session = Depends(get_db), temporada: TemporadaLogica = Depends(temporada_seleccionada)) -> dict:
     if not puede_ver(usuario, "DOCUMENTOS"):
         raise HTTPException(403, "No tienes permiso para ver este módulo")
     verificar_unidad(usuario, datos.unidad_id)
-    cap = Capacitacion(**datos.model_dump(), creado_por_id=usuario.id)
+    cap = Capacitacion(**datos.model_dump(), creado_por_id=usuario.id,
+                       temporada=temporada_al_guardar(db, temporada, datos.fecha,
+                                                      obtener(db, Unidad, datos.unidad_id).empresa_id))
     db.add(cap)
     db.flush()
     registrar(db, usuario, "crear", "capacitacion", cap.id, {"tema": cap.tema})

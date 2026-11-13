@@ -5,7 +5,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from utils.historial import registrar
-from utils.comunes import temporada_para_fecha
+from utils.comunes import TemporadaLogica, temporada_para_fecha
 from utils.importadores import HojaImportada, ItemImportado, PuntoControl, leer_brcgs, orden_codigo
 from utils.importar_checklist import leer_checklist
 from utils.modelos import Auditoria, Protocolo, Requisito, Respuesta, Unidad, Usuario, VersionNorma
@@ -47,7 +47,7 @@ def _deduplicar(items: list[ItemImportado]) -> list[ItemImportado]:
 
 
 def importar_brcgs(db: Session, contenido: bytes, nombre_archivo: str, usuario: Usuario | None,
-                   confirmar: bool, unidad_id: int | None = None) -> dict:
+                   confirmar: bool, unidad_id: int | None = None, elegida: TemporadaLogica | None = None) -> dict:
     hojas = leer_brcgs(contenido)
     salida = []
     for hoja in hojas:
@@ -73,19 +73,23 @@ def importar_brcgs(db: Session, contenido: bytes, nombre_archivo: str, usuario: 
             errores.append(f"No se reconoce la sucursal '{hoja.lugar}'; indícala manualmente")
         if not temporada:
             errores.append("La fecha no cae en ninguna temporada registrada")
+        elif elegida and temporada.id != elegida.id:
+            errores.append(f"La hoja es de la temporada {temporada.nombre}: cambia la temporada arriba a "
+                           f"{temporada.nombre} y vuelve a importarla")
         if duplicada:
             # No se reemplaza: borraría sus respuestas y las no conformidades que ya se están trabajando
             errores.append("Esta hoja ya fue importada: para cambiarla, edita la auditoría existente")
         resumen["errores"] = errores
         if confirmar and not errores:
-            resumen["auditoria_id"] = _guardar_brcgs(db, hoja, unidad, origen, usuario)
+            resumen["auditoria_id"] = _guardar_brcgs(db, hoja, unidad, origen, usuario, temporada.nombre)
         salida.append(resumen)
     if confirmar:
         db.commit()
     return {"archivo": nombre_archivo, "confirmado": confirmar, "hojas": salida}
 
 
-def _guardar_brcgs(db: Session, hoja: HojaImportada, unidad: Unidad, origen: str, usuario: Usuario | None) -> int:
+def _guardar_brcgs(db: Session, hoja: HojaImportada, unidad: Unidad, origen: str, usuario: Usuario | None,
+                   temporada: str | None = None) -> int:
     version = _version(db, "BRCGS", VERSION_BRCGS)
     existentes = {r.codigo: r for r in db.scalars(select(Requisito).where(Requisito.version_id == version.id))}
     advertencias_items = [f"{i.codigo}: {a}" for i in hoja.items for a in i.advertencias]
@@ -93,7 +97,7 @@ def _guardar_brcgs(db: Session, hoja: HojaImportada, unidad: Unidad, origen: str
              "noviembre", "diciembre"]
     # Las auditorías de planillas anteriores se consideran con informe ya emitido
     auditoria = Auditoria(
-        version_id=version.id, unidad_id=unidad.id, fecha=hoja.fecha, fecha_fin=hoja.fecha,
+        version_id=version.id, unidad_id=unidad.id, fecha=hoja.fecha, fecha_fin=hoja.fecha, temporada=temporada,
         titulo=f"Auditoría interna BRCGS cláusula {', '.join(hoja.secciones)} · {meses[hoja.fecha.month - 1]} {hoja.fecha.year}",
         auditor=hoja.auditor.title(), secciones=hoja.secciones, estado="cerrada", origen="importada",
         archivo_origen=origen, advertencias=hoja.advertencias + advertencias_items,

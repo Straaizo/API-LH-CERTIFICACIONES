@@ -376,6 +376,8 @@ class Certificacion(Auditable, Base):
     """Certificado de protocolo obtenido. Sin sucursal = cubre toda la empresa (multisitio)."""
     __tablename__ = "certificaciones_fact_certificacion"
     id: Mapped[str] = _pk()
+    # Temporada en que se cargó (nombre, ej. "26-27"): la elige el usuario arriba y la API valida que calce con la fecha
+    temporada: Mapped[str | None] = mapped_column(String(45))
     protocolo_id: Mapped[str] = _fk("protocolo_id", "certificaciones_dim_protocolo.id")
     empresa_id: Mapped[int] = mapped_column("empresa_id", ForeignKey("general_dim_empresa.id"), sort_order=100)
     entidad_certificadora: Mapped[str | None] = mapped_column(String(120))
@@ -436,6 +438,8 @@ class DocumentoVersion(Auditable, Base):
     __tablename__ = "certificaciones_fact_documentoversion"
     __table_args__ = (UniqueConstraint("documento_id", "numero", name="uq_documentoversion_documento_numero"),)
     id: Mapped[str] = _pk()
+    # Temporada en que se cargó (nombre, ej. "26-27"): la elige el usuario arriba y la API valida que calce con la fecha
+    temporada: Mapped[str | None] = mapped_column(String(45))
     documento_id: Mapped[str] = _fk("documento_id", "certificaciones_dim_documento.id")
     numero: Mapped[int] = mapped_column(Integer)
     archivo_key: Mapped[str | None] = mapped_column(String(200))
@@ -458,6 +462,8 @@ class DocumentoVersion(Auditable, Base):
 class Capacitacion(Auditable, Base):
     __tablename__ = "certificaciones_fact_capacitacion"
     id: Mapped[str] = _pk()
+    # Temporada en que se cargó (nombre, ej. "26-27"): la elige el usuario arriba y la API valida que calce con la fecha
+    temporada: Mapped[str | None] = mapped_column(String(45))
     unidad_id: Mapped[int] = _sucursal_id()
     tema: Mapped[str] = mapped_column(String(120))
     fecha: Mapped[date] = mapped_column(Date)
@@ -504,6 +510,8 @@ class Registro(Auditable, Base):
     """Registro generado desde una plantilla. Guarda una copia de los campos: editar la plantilla no lo altera."""
     __tablename__ = "certificaciones_fact_registro"
     id: Mapped[str] = _pk()
+    # Temporada en que se cargó (nombre, ej. "26-27"): la elige el usuario arriba y la API valida que calce con la fecha
+    temporada: Mapped[str | None] = mapped_column(String(45))
     plantilla_id: Mapped[str] = _fk("plantillaregistro_id", "certificaciones_dim_plantillaregistro.id")
     unidad_id: Mapped[int] = _sucursal_id()
     titulo: Mapped[str] = mapped_column(String(250))
@@ -586,6 +594,8 @@ class LimiteParametro(Auditable, Base):
 class Analisis(Auditable, Base):
     __tablename__ = "certificaciones_fact_analisis"
     id: Mapped[str] = _pk()
+    # Temporada en que se cargó (nombre, ej. "26-27"): la elige el usuario arriba y la API valida que calce con la fecha
+    temporada: Mapped[str | None] = mapped_column(String(45))
     tipo_analisis_id: Mapped[str] = _fk("tipoanalisis_id", "certificaciones_dim_tipoanalisis.id")
     unidad_id: Mapped[int] = _sucursal_id()
     fuente_agua_id: Mapped[str | None] = _fk("fuenteagua_id", "certificaciones_dim_fuenteagua.id")
@@ -677,6 +687,8 @@ class AsoexLimite(Auditable, Base):
 class Auditoria(Auditable, Base):
     __tablename__ = "certificaciones_fact_auditoria"
     id: Mapped[str] = _pk()
+    # Temporada en que se cargó (nombre, ej. "26-27"): la elige el usuario arriba y la API valida que calce con la fecha
+    temporada: Mapped[str | None] = mapped_column(String(45))
     version_id: Mapped[str] = _fk("versionnorma_id", "certificaciones_dim_versionnorma.id")
     unidad_id: Mapped[int] = _sucursal_id()
     titulo: Mapped[str | None] = mapped_column(String(120))
@@ -723,6 +735,8 @@ class AuditoriaExterna(Auditable, Base):
     """
     __tablename__ = "certificaciones_fact_auditoriaexterna"
     id: Mapped[str] = _pk()
+    # Temporada en que se cargó (nombre, ej. "26-27"): la elige el usuario arriba y la API valida que calce con la fecha
+    temporada: Mapped[str | None] = mapped_column(String(45))
     protocolo_id: Mapped[str | None] = _fk("protocolo_id", "certificaciones_dim_protocolo.id")
     empresa_id: Mapped[int | None] = mapped_column("empresa_id", ForeignKey("general_dim_empresa.id"), sort_order=100)
     # final | no_conformidades | acciones_correctivas
@@ -761,6 +775,8 @@ class AuditoriaExternaVersion(Auditable, Base):
 class NoConformidad(Auditable, Base):
     __tablename__ = "certificaciones_fact_noconformidad"
     id: Mapped[str] = _pk()
+    # Temporada en que se cargó (nombre, ej. "26-27"): la elige el usuario arriba y la API valida que calce con la fecha
+    temporada: Mapped[str | None] = mapped_column(String(45))
     auditoria_id: Mapped[str] = _fk("auditoria_id", "certificaciones_fact_auditoria.id")
     respuesta_id: Mapped[str | None] = _fk("respuesta_id", "certificaciones_fact_respuesta.id")
     requisito_id: Mapped[str] = _fk("requisito_id", "certificaciones_dim_requisito.id")
@@ -842,6 +858,8 @@ class RegistroAmbiental(Auditable, Base):
     """Consumo o reciclaje de una sucursal en una fecha, en la unidad del concepto (L, kWh, kg)."""
     __tablename__ = "certificaciones_fact_registroambiental"
     id: Mapped[str] = _pk()
+    # Temporada en que se cargó (nombre, ej. "26-27"): la elige el usuario arriba y la API valida que calce con la fecha
+    temporada: Mapped[str | None] = mapped_column(String(45))
     unidad_id: Mapped[int] = _sucursal_id()
     concepto_id: Mapped[str] = _fk("conceptoambiental_id", "certificaciones_dim_conceptoambiental.id")
     fecha: Mapped[date] = mapped_column(Date, index=True)

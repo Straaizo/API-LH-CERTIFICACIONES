@@ -11,7 +11,8 @@ from utils.proteccion import MAX_MB_ARCHIVO
 from utils.auth import NC, requiere_ver, solo_certificaciones, tiene_permiso, verificar_unidad
 from utils.historial import registrar
 from utils.comunes import (
-    filtrar_temporada, filtrar_unidades, obtener, obtener_temporada, temporada_dict, temporada_para_fecha, unidad_dict,
+    TemporadaLogica, filtrar_temporada, filtrar_unidades, obtener, obtener_temporada, temporada_al_guardar,
+    temporada_dict, temporada_para_fecha, temporada_seleccionada, unidad_dict,
 )
 from utils.db import get_db
 from utils.exportar_auditoria import exportar_auditoria
@@ -105,7 +106,7 @@ def listar(empresa_id: int | None = None, unidad_id: int | None = None, temporad
     consulta = filtrar_unidades(
         select(Auditoria).options(selectinload(Auditoria.respuestas).selectinload(Respuesta.requisito)),
         Auditoria.unidad_id, usuario, empresa_id, unidad_id)
-    consulta = filtrar_temporada(db, consulta, temporada_id, Auditoria.fecha, Auditoria.unidad_id)
+    consulta = filtrar_temporada(db, consulta, temporada_id, Auditoria.fecha, Auditoria.unidad_id, Auditoria.temporada)
     if protocolo_id:
         consulta = consulta.where(Auditoria.version_id.in_(
             select(VersionNorma.id).where(VersionNorma.protocolo_id == protocolo_id)))
@@ -118,7 +119,7 @@ def listar(empresa_id: int | None = None, unidad_id: int | None = None, temporad
 
 @router.post("/auditorias", status_code=201)
 def planificar(datos: AuditoriaEntrada, usuario: Usuario = Depends(solo_certificaciones),
-               db: Session = Depends(get_db)) -> dict:
+               db: Session = Depends(get_db), temporada: TemporadaLogica = Depends(temporada_seleccionada)) -> dict:
     version = obtener(db, VersionNorma, datos.version_id)
     unidad = obtener(db, Unidad, datos.unidad_id)
     if not version.protocolo.aplica_a(unidad):
@@ -130,7 +131,8 @@ def planificar(datos: AuditoriaEntrada, usuario: Usuario = Depends(solo_certific
     # Sin cláusulas: la auditoría incluye todas las de la versión de la norma
     auditoria = Auditoria(version_id=version.id, unidad_id=unidad.id, titulo=(datos.titulo or "").strip() or None,
                           fecha=datos.fecha_inicio, fecha_fin=datos.fecha_fin, auditor=datos.auditor, secciones=[],
-                          estado="planificada", origen="app")
+                          estado="planificada", origen="app",
+                          temporada=temporada_al_guardar(db, temporada, datos.fecha_inicio, unidad.empresa_id))
     db.add(auditoria)
     db.flush()
     registrar(db, usuario, "planificar", "auditoria", auditoria.id, datos.model_dump(mode="json"))
@@ -393,11 +395,11 @@ async def _leer_planilla(archivo: UploadFile) -> bytes:
 @router.post("/importaciones/brcgs")
 async def importar_auditoria_brcgs(archivo: UploadFile = File(...), confirmar: bool = Form(False),
                                    unidad_id: int | None = Form(None), usuario: Usuario = Depends(solo_certificaciones),
-                                   db: Session = Depends(get_db)) -> dict:
+                                   db: Session = Depends(get_db), temporada: TemporadaLogica = Depends(temporada_seleccionada)) -> dict:
     """Sin confirmar: vista previa con lo detectado y los errores de la planilla. Confirmado: guarda."""
     contenido = await _leer_planilla(archivo)
     try:
-        return importar_brcgs(db, contenido, archivo.filename, usuario, confirmar, unidad_id)
+        return importar_brcgs(db, contenido, archivo.filename, usuario, confirmar, unidad_id, temporada)
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
 

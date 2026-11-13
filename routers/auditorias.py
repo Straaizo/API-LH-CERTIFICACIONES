@@ -143,7 +143,7 @@ def planificar(datos: AuditoriaEntrada, usuario: Usuario = Depends(solo_certific
 
 @router.patch("/auditorias/{auditoria_id}")
 def modificar(auditoria_id: str, datos: AuditoriaCambios, usuario: Usuario = Depends(solo_certificaciones),
-              db: Session = Depends(get_db)) -> dict:
+              db: Session = Depends(get_db), temporada: TemporadaLogica = Depends(temporada_seleccionada)) -> dict:
     auditoria = obtener(db, Auditoria, auditoria_id)
     cambios = datos.model_dump(exclude_unset=True)
     if "estado" in cambios and cambios["estado"] not in ("planificada", "en_curso", "cerrada"):
@@ -151,8 +151,7 @@ def modificar(auditoria_id: str, datos: AuditoriaCambios, usuario: Usuario = Dep
     if auditoria.emitida_en and set(cambios) - {"titulo"}:
         raise HTTPException(400, "El informe ya fue emitido")
     if "fecha_inicio" in cambios:
-        if not temporada_para_fecha(db, cambios["fecha_inicio"], auditoria.unidad.empresa_id):
-            raise HTTPException(400, "La fecha no cae en ninguna temporada registrada")
+        auditoria.temporada = temporada_al_guardar(db, temporada, cambios["fecha_inicio"], auditoria.unidad.empresa_id)
         auditoria.fecha = cambios.pop("fecha_inicio")
     for campo, valor in cambios.items():
         setattr(auditoria, campo, valor)

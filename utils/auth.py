@@ -161,6 +161,12 @@ def solo_certificaciones(usuario: Usuario = Depends(usuario_actual)) -> Usuario:
     return usuario
 
 
+def solo_ve_todo(usuario: Usuario = Depends(usuario_actual)) -> Usuario:
+    if not ve_todo(usuario):
+        raise HTTPException(403, "Solo para quien ve todo Certificaciones")
+    return usuario
+
+
 def solo_historial(usuario: Usuario = Depends(usuario_actual)) -> Usuario:
     if PERMISO_HISTORIAL not in usuario.codigos_permiso:
         raise HTTPException(403, "No tienes permiso para ver el historial de cambios")
@@ -183,8 +189,8 @@ def requiere_permiso(permiso: str):
 
 
 def unidades_permitidas(usuario: Usuario) -> set[int] | None:
-    """Sucursales que ve el usuario. None = todas (administrador)."""
-    if es_certificaciones(usuario):
+    """Sucursales que ve el usuario. None = todas (CERTIFICACIONES_ADMIN o CERTIFICACIONES_VER)."""
+    if ve_todo(usuario):
         return None
     return {u.id for u in usuario.unidades}
 

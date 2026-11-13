@@ -231,3 +231,57 @@ def test_checklist_no_se_carga_en_otra_norma():
     _validar_formato_protocolo("GLOBALG.A.P. IFA", "GLOBALGAP", "GLOBALGAP")
     _validar_formato_protocolo("Tabla de principios y criterios", "GROW", "TESCO_NURTURE")
     _validar_formato_protocolo("GRASP", "GRASP", "GRASP")
+
+
+def _con_permiso(sesion, uid: str, usuario: str, codigo: str) -> None:
+    """Usuario con un solo permiso de esta app y sin sucursales asignadas."""
+    sesion.add(Permiso(id=f"p-{uid}", nombre=codigo, app_id=Config.APP_ID, id_estado=1))
+    sesion.add(Usuario(id=uid, usuario=usuario, correo=f"{usuario}@ejemplo.cl", nombre=usuario, id_estado=1,
+                       clave=bcrypt.hashpw(CLAVE.encode(), bcrypt.gensalt(rounds=4)).decode()))
+    sesion.flush()
+    sesion.execute(insert(usuario_apps), [{"id": f"a-{uid}", "id_usuario": uid, "id_app": Config.APP_ID}])
+    sesion.execute(insert(usuario_permisos), [{"id": f"x-{uid}", "id_usuario": uid, "id_permiso": f"p-{uid}"}])
+    sesion.commit()
+
+
+def _cabeceras(cliente, usuario: str) -> dict:
+    token = cliente.post("/api/auth/login", json={"usuario": usuario, "clave": CLAVE}).json()["access_token"]
+    return {"Authorization": f"Bearer {token}"}
+
+
+def test_certificaciones_ver_ve_todas_las_sucursales_y_externas_sin_subir(cliente, sesion):
+    _con_permiso(sesion, "u-ver", "lector", "CERTIFICACIONES_VER")
+    assert unidades_permitidas(sesion.get(Usuario, "u-ver")) is None
+    cab = _cabeceras(cliente, "lector")
+    assert {u["id"] for u in cliente.get("/api/catalogos", headers=cab).json()["unidades"]} == {105, 201}
+    assert cliente.get("/api/auditorias-externas", headers=cab).status_code == 200
+    r = cliente.post("/api/auditorias-externas", headers=cab, files={"archivos": ("a.pdf", b"%PDF-1.4", "application/pdf")})
+    assert r.status_code == 403
+
+
+def test_ambiente_ver_solo_ve_combustibles(cliente, sesion):
+    from utils.modelos import ConceptoAmbiental
+    sesion.add_all([ConceptoAmbiental(codigo="combustible_diesel", nombre="Diésel", categoria="combustible",
+                                      unidad_medida="L", activo=True),
+                    ConceptoAmbiental(codigo="electricidad", nombre="Electricidad", categoria="electricidad",
+                                      unidad_medida="kWh", activo=True)])
+    _con_permiso(sesion, "u-amb", "combustibles", "AMBIENTE_VER")
+    cab = _cabeceras(cliente, "combustibles")
+    assert [c["codigo"] for c in cliente.get("/api/ambiente/conceptos", headers=cab).json()] == ["combustible_diesel"]
+    assert cliente.get("/api/ambiente/reciclaje", headers=cab).status_code == 403
+    # Quien no edita no recibe la lista de usuarios de la app
+    assert cliente.get("/api/catalogos", headers=cab).json()["usuarios"] == []
+
+
+def test_informe_externo_ilegible_se_rechaza_sin_guardar(cliente, sesion):
+    from utils.modelos import AuditoriaExterna
+    r = cliente.post("/api/auditorias-externas", headers=_cabeceras(cliente, "ladmin"),
+                     files={"archivos": ("escaneado.pdf", b"%PDF-1.4 sin texto", "application/pdf")})
+    assert r.status_code == 400 and "escaneado" in r.json()["detail"]
+    assert sesion.scalars(select(AuditoriaExterna)).first() is None
+
+
+def test_brcgs_que_no_es_excel_da_mensaje_claro():
+    from utils.importadores import leer_brcgs
+    with pytest.raises(ValueError, match="xlsx válido"):
+        leer_brcgs(b"no es un excel")

@@ -85,7 +85,10 @@ class HojaImportada:
 
 
 def leer_brcgs(contenido: bytes) -> list[HojaImportada]:
-    libro = openpyxl.load_workbook(io.BytesIO(contenido), data_only=True, read_only=True)
+    try:
+        libro = openpyxl.load_workbook(io.BytesIO(contenido), data_only=True, read_only=True)
+    except Exception as exc:
+        raise ValueError("No se pudo abrir la planilla: debe ser un .xlsx válido") from exc
     return [_leer_hoja_brcgs(ws) for ws in libro.worksheets]
 
 

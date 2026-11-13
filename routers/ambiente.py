@@ -48,7 +48,7 @@ def no_encargado(usuario: Usuario = Depends(usuario_actual)) -> Usuario:
 
 def _conceptos_consumo(db: Session, usuario: Usuario) -> list[ConceptoAmbiental]:
     consulta = select(ConceptoAmbiental).where(ConceptoAmbiental.categoria != RECICLAJE, ConceptoAmbiental.activo)
-    if usuario.rol == "encargado":
+    if not ve_todo(usuario):
         consulta = consulta.where(ConceptoAmbiental.categoria.in_(CATEGORIAS_ENCARGADO))
     return list(db.scalars(consulta.order_by(ConceptoAmbiental.categoria, ConceptoAmbiental.nombre)))
 
@@ -243,14 +243,14 @@ def informe(empresa_id: int | None = None, unidad_id: int | None = None, tempora
             db: Session = Depends(get_db)) -> Response:
     """Informe formal en PDF de la comparativa. Los encargados (administrativos, aplicaciones) reciben solo
     combustibles, lo mismo que ven en pantalla."""
-    categorias = CATEGORIAS_ENCARGADO if usuario.rol == "encargado" else None
+    categorias = None if ve_todo(usuario) else CATEGORIAS_ENCARGADO
     datos = datos_comparativa(db, usuario, empresa_id, unidad_id, temporada_id, anterior_id, categorias)
     if unidad_id:
         alcance = obtener(db, Unidad, unidad_id).etiqueta
     elif empresa_id:
         alcance = obtener(db, Empresa, empresa_id).nombre.title()
     else:
-        alcance = "Todas las sucursales" if usuario.rol == "certificaciones" else "Mis sucursales"
+        alcance = "Todas las sucursales" if ve_todo(usuario) else "Mis sucursales"
     contenido = informe_pdf(datos, alcance=alcance, solo_combustibles=categorias is not None,
                             emitido_por=usuario.nombre or usuario.usuario)
     nombre = f"Informe medio ambiente {datos['actual']['nombre']} {alcance}.pdf".replace("/", "-")

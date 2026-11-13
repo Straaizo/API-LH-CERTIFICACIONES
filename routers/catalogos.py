@@ -3,7 +3,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
 from config import Config
-from utils.auth import modulos_visibles, unidades_permitidas, usuario_actual, verificar_clave_demo
+from utils.auth import modulos_visibles, unidades_permitidas, usuario_actual, ve_todo, verificar_clave_demo
 from utils.comunes import obtener, temporada_actual, unidad_dict
 from utils.db import get_db
 from utils.modelos import (
@@ -86,7 +86,8 @@ def catalogos(usuario: Usuario = Depends(usuario_actual), db: Session = Depends(
             select(ConceptoAmbiental).where(ConceptoAmbiental.categoria == "reciclaje", ConceptoAmbiental.activo)
             .order_by(ConceptoAmbiental.nombre))],
         "usuarios": [{"id": u.id, "nombre": u.nombre or u.usuario, "rol": u.rol}
-                     for u in _usuarios_app(db) if u.rol != "lectura"],
+                     for u in _usuarios_app(db) if u.rol != "lectura"]
+                    if usuario.rol != "lectura" or ve_todo(usuario) else [],
     }
 
 

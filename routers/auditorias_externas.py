@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session, selectinload
 
 from utils import almacenamiento
 from utils.proteccion import MAX_MB_ARCHIVO
-from utils.auth import solo_certificaciones
+from utils.auth import solo_certificaciones, solo_ve_todo
 from utils.historial import registrar
 from utils.duplicados import error_duplicado, existente
 from utils.comunes import TemporadaLogica, obtener, temporada_al_guardar, temporada_seleccionada, unidad_dict
@@ -96,7 +96,7 @@ def _catalogos(db: Session) -> tuple[dict[int, Unidad], dict[int, Empresa]]:
 
 @router.get("")
 def listar(empresa_id: int | None = None, unidad_id: int | None = None, temporada_id: int | None = None,
-           protocolo_id: str | None = None, _: Usuario = Depends(solo_certificaciones),
+           protocolo_id: str | None = None, _: Usuario = Depends(solo_ve_todo),
            db: Session = Depends(get_db)) -> list[dict]:
     from utils.temporadas import buscar_temporada
 
@@ -208,9 +208,19 @@ async def subir(archivos: list[UploadFile] = File(...), reemplazar: bool = Form(
         leidos.append((nombre, contenido))
     repetidas = {v.nombre_archivo: v for v in db.scalars(select(AuditoriaExternaVersion).where(
         AuditoriaExternaVersion.nombre_archivo.in_([n for n, _ in leidos])))}
-    for nombre, contenido in leidos:
-        if nombre not in repetidas and (igual := _version_igual(db, leer_auditoria_externa(contenido, nombre))):
+    lecturas = {nombre: leer_auditoria_externa(contenido, nombre) for nombre, contenido in leidos}
+    for nombre, _ in leidos:
+        if nombre not in repetidas and (igual := _version_igual(db, lecturas[nombre])):
             repetidas[nombre] = igual
+    # Todo se valida antes de escribir archivos: un error a mitad del lote no deja PDF huérfanos en el bucket
+    for nombre, _ in leidos:
+        lectura = lecturas[nombre]
+        if not lectura.texto_leido:
+            raise HTTPException(400, f"No se pudo leer el texto de «{nombre}»: parece escaneado o dañado. "
+                                     "Sube el PDF original que entregó la certificadora.")
+        if nombre not in repetidas:
+            empresa_id = {"LH": 1, "VS": 2}.get(lectura.empresa or "")
+            temporada_al_guardar(db, temporada, lectura.fecha_inicio, empresa_id)
     if repetidas and not reemplazar:
         raise error_duplicado(
             "Estos informes ya están subidos." if len(repetidas) > 1 else "Este informe ya está subido.",
@@ -227,7 +237,7 @@ async def subir(archivos: list[UploadFile] = File(...), reemplazar: bool = Form(
 
 
 @router.get("/{auditoria_id}")
-def detalle(auditoria_id: str, _: Usuario = Depends(solo_certificaciones), db: Session = Depends(get_db)) -> dict:
+def detalle(auditoria_id: str, _: Usuario = Depends(solo_ve_todo), db: Session = Depends(get_db)) -> dict:
     unidades, empresas = _catalogos(db)
     return _dict(obtener(db, AuditoriaExterna, auditoria_id), unidades, empresas, detalle=True)
 
@@ -254,13 +264,13 @@ async def nueva_version(auditoria_id: str, archivo: UploadFile = File(...), reem
 
 
 @router.get("/versiones/{version_id}/descarga")
-def descargar(version_id: str, _: Usuario = Depends(solo_certificaciones), db: Session = Depends(get_db)) -> dict:
+def descargar(version_id: str, _: Usuario = Depends(solo_ve_todo), db: Session = Depends(get_db)) -> dict:
     version = obtener(db, AuditoriaExternaVersion, version_id)
     return {"url": almacenamiento.url_descarga(version.archivo_key, version.nombre_archivo)}
 
 
 @router.get("/{auditoria_id}/resumen.{formato}")
-def resumen(auditoria_id: str, formato: str, _: Usuario = Depends(solo_certificaciones),
+def resumen(auditoria_id: str, formato: str, _: Usuario = Depends(solo_ve_todo),
             db: Session = Depends(get_db)) -> Response:
     """Resumen del informe en PDF o Word."""
     if formato not in ("pdf", "docx"):

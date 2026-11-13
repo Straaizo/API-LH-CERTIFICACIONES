@@ -10,7 +10,7 @@ from utils.auth import NC, es_certificaciones, requiere_permiso, requiere_ver, s
 from utils.historial import registrar
 from utils.comunes import filtrar_temporada, filtrar_unidades, obtener, unidad_dict
 from utils.db import get_db
-from utils.modelos import AccionCorrectiva, Auditoria, NoConformidad, Usuario, VersionNorma
+from utils.modelos import AccionCorrectiva, Area, Auditoria, NoConformidad, Usuario, VersionNorma
 from utils.hora import ahora
 
 router = APIRouter(prefix="/no-conformidades")
@@ -192,6 +192,10 @@ def modificar(nc_id: str, datos: NcCambios, usuario: Usuario = Depends(solo_cert
             raise HTTPException(400, "Para cerrar usa la acción 'cerrar' (exige evidencia)")
         if nc.estado == "cerrada" or cambios["estado"] not in ("abierta", "en_proceso"):
             raise HTTPException(400, "Cambio de estado no permitido")
+    if cambios.get("responsable_id"):
+        obtener(db, Usuario, cambios["responsable_id"])
+    if cambios.get("area_id"):
+        obtener(db, Area, cambios["area_id"])
     for campo, valor in cambios.items():
         setattr(nc, campo, valor)
     registrar(db, usuario, "modificar", "no_conformidad", nc.id, datos.model_dump(mode="json", exclude_unset=True))

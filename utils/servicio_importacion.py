@@ -136,12 +136,32 @@ def _comparar(anterior: VersionNorma, puntos: list[PuntoControl]) -> dict:
     return {"version": anterior.nombre, "agregados": agregados, "quitados": quitados, "cambiados": cambiados}
 
 
+# Normas que comparten formato de planilla: dentro de una familia se puede corregir la sugerencia (GROW, Nurture y
+# FSMA vienen en la misma tabla de GLOBALG.A.P.); entre familias no, porque la planilla es de otra norma
+FAMILIAS_CHECKLIST = {
+    "GLOBALG.A.P. IFA": {"GLOBALGAP"},
+    "Tabla de principios y criterios": {"GLOBALGAP", "GROW", "TESCO_NURTURE", "FSMA_PSR"},
+    "GRASP": {"GRASP"},
+    "PrimusGFS": {"PRIMUSGFS"},
+}
+
+
+def _validar_formato_protocolo(formato: str, sugerido: str | None, codigo: str | None) -> None:
+    """Impide guardar un checklist en una norma que no corresponde a su planilla (p. ej. un IFA como GRASP)."""
+    permitidos = FAMILIAS_CHECKLIST.get(formato)
+    if codigo and permitidos and codigo not in permitidos:
+        nombre = sugerido or " o ".join(sorted(permitidos))
+        raise ValueError(f"La planilla es un checklist de {formato} y no puede cargarse como {codigo}. "
+                         f"Elige {nombre}.")
+
+
 def importar_checklist(db: Session, contenido: bytes, nombre_archivo: str, usuario: Usuario | None,
                        confirmar: bool, protocolo_codigo: str | None = None) -> dict:
     """Checklist de cualquier norma conocida. Si la versión ya existe (p. ej. otro módulo de PrimusGFS),
     se agregan solo los puntos que falten; si es una versión nueva, las anteriores dejan de estar vigentes."""
     leido = leer_checklist(contenido, nombre_archivo)
     codigo = protocolo_codigo or leido.protocolo_sugerido
+    _validar_formato_protocolo(leido.formato, leido.protocolo_sugerido, codigo)
     protocolo = db.scalar(select(Protocolo).where(Protocolo.codigo == codigo)) if codigo else None
     niveles: dict[str, int] = {}
     secciones: dict[str, str] = {}
@@ -149,6 +169,8 @@ def importar_checklist(db: Session, contenido: bytes, nombre_archivo: str, usuar
         niveles[p.nivel] = niveles.get(p.nivel, 0) + 1
         secciones.setdefault(p.seccion, p.seccion_titulo)
     resumen = {"archivo": nombre_archivo, "formato": leido.formato, "protocolo_sugerido": leido.protocolo_sugerido,
+               # Normas en que se puede guardar esta planilla (el selector de la app muestra solo estas)
+               "protocolos_permitidos": sorted(FAMILIAS_CHECKLIST.get(leido.formato, set())),
                "protocolo": codigo, "protocolo_nombre": protocolo.nombre if protocolo else None,
                "version": leido.version, "puntos": len(leido.puntos), "niveles": niveles,
                "secciones": [{"codigo": c, "titulo": t} for c, t in secciones.items()],

@@ -218,3 +218,16 @@ def test_consumo_guarda_la_temporada_seleccionada(cliente, sesion):
     # Y el filtro por temporada lo encuentra en 25-26 y no en 26-27
     assert len(cliente.get("/api/ambiente/consumos", params={"temporada_id": 2025}, headers=cabeceras).json()) == 1
     assert cliente.get("/api/ambiente/consumos", params={"temporada_id": 2026}, headers=cabeceras).json() == []
+
+
+def test_checklist_no_se_carga_en_otra_norma():
+    """Un checklist solo puede guardarse en una norma de su mismo formato de planilla."""
+    from utils.servicio_importacion import _validar_formato_protocolo
+    with pytest.raises(ValueError, match="no puede cargarse como GRASP"):
+        _validar_formato_protocolo("GLOBALG.A.P. IFA", "GLOBALGAP", "GRASP")
+    with pytest.raises(ValueError):
+        _validar_formato_protocolo("PrimusGFS", "PRIMUSGFS", "BRCGS")
+    # Lo correcto pasa, y dentro de la tabla de GLOBALG.A.P. se puede corregir entre sus add-on
+    _validar_formato_protocolo("GLOBALG.A.P. IFA", "GLOBALGAP", "GLOBALGAP")
+    _validar_formato_protocolo("Tabla de principios y criterios", "GROW", "TESCO_NURTURE")
+    _validar_formato_protocolo("GRASP", "GRASP", "GRASP")

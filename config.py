@@ -21,7 +21,8 @@ class Config:
     # ── CORS ──────────────────────────────────────────────────────────────────
     # Fijos en el código, como LH Inventario: el frontend publicado en Firebase Hosting. En local se suma Vite.
     # ORIGENES_PERMITIDOS (opcional) agrega otros, por ejemplo un dominio propio.
-    ORIGENES_FIJOS = ["https://certificaciones-ea86d.web.app", "https://certificaciones-ea86d.firebaseapp.com"]
+    ORIGENES_FIJOS = ["https://certificaciones.lahornilla.cl",
+                      "https://certificaciones-ea86d.web.app", "https://certificaciones-ea86d.firebaseapp.com"]
     ORIGENES_PERMITIDOS = ORIGENES_FIJOS + _lista(os.getenv(
         "ORIGENES_PERMITIDOS", "" if ENTORNO == "produccion" else "http://localhost:5173"))
 

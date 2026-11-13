@@ -161,7 +161,7 @@ PERMISO_HISTORIAL = "CERTIFICACIONES_HISTORIAL"
 # Nombre que ve quien asigna permisos en el portal web (usuario_dim_permiso.nombre, máx. 45 caracteres) → código
 # que usa la API. Los códigos solos (REGISTROS_EDITAR...) también se aceptan, por compatibilidad.
 NOMBRES_PERMISO = {
-    # Formato del portal "Módulo - Ver …" / "Módulo - Editar …": los empareja en una fila con interruptores Ver y Editar
+    # Nombres que usa hoy el portal (12-11-2026): uno por fila, "Módulo - Ver …" / "Módulo - Editar …"
     "Registros - Ver registros de la sucursal": "REGISTROS_VER",
     "Registros - Editar registros de la sucursal": "REGISTROS_EDITAR",
     "NC - Ver no conformidades de la sucursal": "NC_VER",

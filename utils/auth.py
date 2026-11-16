@@ -19,15 +19,37 @@ from config import Config
 from utils.db import get_db
 from utils.modelos import PERMISO_ADMIN, PERMISO_HISTORIAL, PERMISO_VER, Usuario
 
-# Permisos de edición por módulo (además, CERTIFICACIONES_ADMIN puede todo)
-REGISTROS = "REGISTROS_EDITAR"
-NC = "NC_EDITAR"
-LABORATORIO = "LABORATORIO_EDITAR"
-AMBIENTE = "AMBIENTE_EDITAR"
+# Permisos por acción (CERTIFICACIONES_ADMIN puede todo). Contrato completo en docs/requerimientos.md (Permisos).
+REGISTROS = "REGISTROS_EDITAR"            # llenar y enviar registros
+REGISTROS_REVISAR = "REGISTROS_REVISAR"   # crear y asignar registros, corregir, aprobar o rechazar
+PLANTILLAS = "PLANTILLAS_EDITAR"          # crear, importar desde Word y editar plantillas
+DOCUMENTOS = "DOCUMENTOS_EDITAR"          # subir documentos fijos y versiones nuevas
+NC = "NC_EDITAR"                          # plan de acción y evidencia
+NC_REVISAR = "NC_REVISAR"                 # devolver, cerrar y reasignar no conformidades
+LABORATORIO = "LABORATORIO_EDITAR"        # análisis y residuos (MRL)
+LABORATORIO_ASOEX = "LABORATORIO_ASOEX"   # actualizar ASOEX y la carta de destino
+AMBIENTE = "AMBIENTE_EDITAR"              # consumos de combustible
+AMBIENTE_RECICLAJE = "AMBIENTE_RECICLAJE" # registrar reciclaje
+AUDITORIAS = "AUDITORIAS_EDITAR"          # planificar, responder y emitir auditorías internas
+AUDITORIAS_EXTERNAS = "AUDITORIAS_EXTERNAS_EDITAR"  # subir informes externos
+IMPORTAR = "IMPORTAR_PLANILLAS"           # importar BRCGS y checklist de normas
 
-# Módulos que se ven por permiso: <MODULO>_VER o <MODULO>_EDITAR (editar incluye ver).
-# CERTIFICACIONES_ADMIN y CERTIFICACIONES_VER (solo lectura, auditores) ven todos.
-MODULOS = ("REGISTROS", "DOCUMENTOS", "LABORATORIO", "AUDITORIAS", "NC", "AMBIENTE")
+# Módulos que se ven: con cualquiera de sus permisos. CERTIFICACIONES_ADMIN ve todos; CERTIFICACIONES_VER (auditores,
+# solo lectura) ve todos menos Importar, que es una acción.
+PERMISOS_MODULO: dict[str, set[str]] = {
+    "REGISTROS": {"REGISTROS_VER", REGISTROS, REGISTROS_REVISAR},
+    "DOCUMENTOS": {"DOCUMENTOS_VER", DOCUMENTOS},
+    "PLANTILLAS": {"PLANTILLAS_VER", PLANTILLAS},
+    "VENCIMIENTOS": {"VENCIMIENTOS_VER"},
+    "LABORATORIO": {"LABORATORIO_VER", LABORATORIO, LABORATORIO_ASOEX},
+    "AUDITORIAS": {"AUDITORIAS_VER", AUDITORIAS},
+    "AUDITORIAS_EXTERNAS": {"AUDITORIAS_EXTERNAS_VER", AUDITORIAS_EXTERNAS},
+    "NC": {"NC_VER", NC, NC_REVISAR},
+    "AMBIENTE": {"AMBIENTE_VER", AMBIENTE, AMBIENTE_RECICLAJE},
+    "IMPORTAR": {IMPORTAR},
+}
+MODULOS = tuple(PERMISOS_MODULO)
+SOLO_ADMIN_O_PERMISO = {"IMPORTAR"}  # CERTIFICACIONES_VER no los ve
 
 _HASH_FICTICIO = bcrypt.hashpw(b"marcador-tiempo-constante", bcrypt.gensalt(rounds=12))
 
@@ -135,7 +157,9 @@ def tiene_permiso(usuario: Usuario, permiso: str) -> bool:
 
 def puede_ver(usuario: Usuario, modulo: str) -> bool:
     codigos = usuario.codigos_permiso
-    return bool(codigos & {PERMISO_ADMIN, PERMISO_VER, f"{modulo}_VER", f"{modulo}_EDITAR"})
+    if PERMISO_ADMIN in codigos or (PERMISO_VER in codigos and modulo not in SOLO_ADMIN_O_PERMISO):
+        return True
+    return bool(codigos & PERMISOS_MODULO.get(modulo, set()))
 
 
 def ve_todo(usuario: Usuario) -> bool:
@@ -147,7 +171,7 @@ def modulos_visibles(usuario: Usuario) -> list[str]:
 
 
 def requiere_ver(*modulos: str):
-    """Dependencia: el usuario puede ver todos los módulos indicados (permiso _VER o _EDITAR, o ve todo)."""
+    """Dependencia: el usuario puede ver todos los módulos indicados (algún permiso del módulo, o ve todo)."""
     def dependencia(usuario: Usuario = Depends(usuario_actual)) -> Usuario:
         if not all(puede_ver(usuario, m) for m in modulos):
             raise HTTPException(403, "No tienes permiso para ver este módulo")
@@ -179,11 +203,20 @@ def puede_escribir(usuario: Usuario = Depends(usuario_actual)) -> Usuario:
     return usuario
 
 
-def requiere_permiso(permiso: str):
-    """Dependencia: el usuario puede editar el módulo (permiso del módulo o administrador)."""
+def requiere_permiso(*permisos: str):
+    """Dependencia: el usuario tiene alguno de los permisos de acción indicados (o es administrador)."""
     def dependencia(usuario: Usuario = Depends(usuario_actual)) -> Usuario:
-        if not tiene_permiso(usuario, permiso):
-            raise HTTPException(403, "No tienes permiso para editar en este módulo")
+        if not any(tiene_permiso(usuario, p) for p in permisos):
+            raise HTTPException(403, "No tienes permiso para hacer esto")
+        return usuario
+    return dependencia
+
+
+def requiere_ver_alguno(*modulos: str):
+    """Dependencia: el usuario puede ver al menos uno de los módulos indicados."""
+    def dependencia(usuario: Usuario = Depends(usuario_actual)) -> Usuario:
+        if not any(puede_ver(usuario, m) for m in modulos):
+            raise HTTPException(403, "No tienes permiso para ver este módulo")
         return usuario
     return dependencia
 

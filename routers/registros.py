@@ -10,7 +10,8 @@ from sqlalchemy.orm import Session
 
 from utils import almacenamiento
 from utils.auth import (
-    REGISTROS, es_certificaciones, requiere_permiso, requiere_ver, solo_certificaciones, verificar_unidad,
+    PLANTILLAS, REGISTROS, REGISTROS_REVISAR, requiere_permiso, requiere_ver, requiere_ver_alguno, tiene_permiso,
+    verificar_unidad,
 )
 from utils.historial import registrar
 from utils.comunes import (
@@ -223,9 +224,11 @@ def valores_iniciales(campos: list[dict], responsable: Usuario | None) -> dict:
             if c["tipo"] == "texto" and c["etiqueta"].strip().lower().rstrip(":.") == "responsable"}
 
 
+def _es_revisor(usuario: Usuario) -> bool:
+    return tiene_permiso(usuario, REGISTROS_REVISAR)
+
+
 def _puede_llenar(usuario: Usuario, registro: Registro) -> None:
-    if es_certificaciones(usuario):
-        return
     verificar_unidad(usuario, registro.unidad_id)
 
 
@@ -270,7 +273,7 @@ def _resumen_cambios(campos: list[dict], antes: dict, despues: dict, autor: str,
 # ---------- Plantillas (solo certificaciones) ----------
 
 @router.get("/plantillas")
-def listar_plantillas(solo_activas: bool = False, _: Usuario = Depends(requiere_ver("REGISTROS")),
+def listar_plantillas(solo_activas: bool = False, _: Usuario = Depends(requiere_ver_alguno("REGISTROS", "PLANTILLAS")),
                       db: Session = Depends(get_db)) -> list[dict]:
     consulta = select(PlantillaRegistro).order_by(PlantillaRegistro.codigo, PlantillaRegistro.nombre)
     if solo_activas:
@@ -279,7 +282,7 @@ def listar_plantillas(solo_activas: bool = False, _: Usuario = Depends(requiere_
 
 
 @router.post("/plantillas", status_code=201)
-def crear_plantilla(datos: PlantillaEntrada, usuario: Usuario = Depends(solo_certificaciones),
+def crear_plantilla(datos: PlantillaEntrada, usuario: Usuario = Depends(requiere_permiso(PLANTILLAS)),
                     db: Session = Depends(get_db)) -> dict:
     plantilla = PlantillaRegistro(codigo=_codigo_libre(db, datos.codigo), version=datos.version.strip() or "01",
                                   nombre=datos.nombre.strip(), descripcion=datos.descripcion, ambito=datos.ambito,
@@ -294,7 +297,7 @@ def crear_plantilla(datos: PlantillaEntrada, usuario: Usuario = Depends(solo_cer
 
 
 @router.put("/plantillas/{plantilla_id}")
-def modificar_plantilla(plantilla_id: str, datos: PlantillaEntrada, usuario: Usuario = Depends(solo_certificaciones),
+def modificar_plantilla(plantilla_id: str, datos: PlantillaEntrada, usuario: Usuario = Depends(requiere_permiso(PLANTILLAS)),
                         db: Session = Depends(get_db)) -> dict:
     """Los registros ya generados conservan su copia de los campos."""
     plantilla = obtener(db, PlantillaRegistro, plantilla_id)
@@ -318,7 +321,7 @@ def modificar_plantilla(plantilla_id: str, datos: PlantillaEntrada, usuario: Usu
 
 @router.post("/plantillas/importar-word")
 async def importar_word(archivo: UploadFile = File(...), confirmar: bool = Form(False), ambito: str = Form("campo"),
-                        reemplazar: bool = Form(False), usuario: Usuario = Depends(solo_certificaciones),
+                        reemplazar: bool = Form(False), usuario: Usuario = Depends(requiere_permiso(PLANTILLAS)),
                         db: Session = Depends(get_db)) -> dict:
     """Lee un formulario Word y propone la plantilla. Sin confirmar, solo devuelve la vista previa."""
     if not (archivo.filename or "").lower().endswith(".docx"):
@@ -371,7 +374,7 @@ def crear_plantilla_desde_word(db: Session, contenido: bytes, nombre_archivo: st
 
 
 @router.get("/plantillas/{plantilla_id}/logo")
-def logo_plantilla(plantilla_id: str, _: Usuario = Depends(requiere_ver("REGISTROS")), db: Session = Depends(get_db)) -> dict:
+def logo_plantilla(plantilla_id: str, _: Usuario = Depends(requiere_ver_alguno("REGISTROS", "PLANTILLAS")), db: Session = Depends(get_db)) -> dict:
     clave = (obtener(db, PlantillaRegistro, plantilla_id).formato or {}).get("logo_clave")
     if not clave:
         raise HTTPException(404, "La plantilla no tiene logo")
@@ -395,8 +398,9 @@ def listar(empresa_id: int | None = None, unidad_id: int | None = None, temporad
 
 
 @router.post("", status_code=201)
-def crear(datos: RegistroEntrada, usuario: Usuario = Depends(solo_certificaciones),
+def crear(datos: RegistroEntrada, usuario: Usuario = Depends(requiere_permiso(REGISTROS_REVISAR)),
           db: Session = Depends(get_db), temporada: TemporadaLogica = Depends(temporada_seleccionada)) -> dict:
+    verificar_unidad(usuario, datos.unidad_id)
     plantilla = obtener(db, PlantillaRegistro, datos.plantilla_id)
     if not plantilla.activa:
         raise HTTPException(400, "La plantilla está desactivada")
@@ -456,12 +460,12 @@ def detalle(registro_id: str, usuario: Usuario = Depends(requiere_ver("REGISTROS
 
 
 @router.put("/{registro_id}/valores")
-def guardar_valores(registro_id: str, valores: dict, usuario: Usuario = Depends(requiere_permiso(REGISTROS)),
+def guardar_valores(registro_id: str, valores: dict, usuario: Usuario = Depends(requiere_permiso(REGISTROS, REGISTROS_REVISAR)),
                     db: Session = Depends(get_db)) -> dict:
     """Guarda lo llenado (parcial o completo). Solo en borrador o rechazado."""
     registro = obtener(db, Registro, registro_id)
     _puede_llenar(usuario, registro)
-    editables = ESTADOS_EDITABLES_CERT if es_certificaciones(usuario) else ESTADOS_EDITABLES
+    editables = ESTADOS_EDITABLES_CERT if _es_revisor(usuario) else ESTADOS_EDITABLES
     if registro.estado not in editables:
         raise HTTPException(400, "El registro no se puede editar en este estado")
     campos = {c["id"]: c for c in registro.campos}
@@ -490,7 +494,7 @@ def guardar_valores(registro_id: str, valores: dict, usuario: Usuario = Depends(
     registro.valores = limpios
     if cambios:
         registro.actualizado_en, registro.actualizado_por_id = momento, usuario.id
-        if not es_certificaciones(usuario):
+        if not _es_revisor(usuario):
             registro.revision_campo_en = momento
         registrar(db, usuario, "guardar", "registro", registro.id,
                   {"cambios": cambios, "avance": avance(registro)["porcentaje"]})
@@ -510,7 +514,7 @@ def enviar(registro_id: str, usuario: Usuario = Depends(requiere_permiso(REGISTR
     if faltan:
         raise HTTPException(400, f"Faltan campos obligatorios: {', '.join(faltan)}")
     registro.estado, registro.enviado_en, registro.observacion = "en_revision", ahora(), None
-    if not es_certificaciones(usuario):
+    if not _es_revisor(usuario):
         registro.revision_campo_en = registro.enviado_en
     registrar(db, usuario, "enviar", "registro", registro.id)
     db.commit()
@@ -518,9 +522,10 @@ def enviar(registro_id: str, usuario: Usuario = Depends(requiere_permiso(REGISTR
 
 
 @router.post("/{registro_id}/revision")
-def revisar(registro_id: str, datos: Revision, usuario: Usuario = Depends(solo_certificaciones),
+def revisar(registro_id: str, datos: Revision, usuario: Usuario = Depends(requiere_permiso(REGISTROS_REVISAR)),
             db: Session = Depends(get_db)) -> dict:
     registro = obtener(db, Registro, registro_id)
+    verificar_unidad(usuario, registro.unidad_id)
     if registro.estado != "en_revision":
         raise HTTPException(400, "Solo se revisan registros enviados")
     if not datos.aprobar and not (datos.observacion or "").strip():
@@ -541,7 +546,7 @@ def exportar(registro_id: str, formato: str = "pdf", usuario: Usuario = Depends(
              db: Session = Depends(get_db)) -> Response:
     registro = obtener(db, Registro, registro_id)
     verificar_unidad(usuario, registro.unidad_id)
-    if registro.estado != "aprobado" and not es_certificaciones(usuario):
+    if registro.estado != "aprobado" and not _es_revisor(usuario):
         raise HTTPException(400, "Solo se descargan registros aprobados")
     nombre = nombre_archivo_seguro(f"{registro.titulo} - {registro.unidad.etiqueta}")
     try:

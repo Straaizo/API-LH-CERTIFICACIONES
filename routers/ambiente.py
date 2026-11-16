@@ -6,7 +6,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
-from utils.auth import AMBIENTE, requiere_permiso, requiere_ver, solo_certificaciones, usuario_actual, ve_todo, verificar_unidad
+from utils.auth import AMBIENTE, AMBIENTE_RECICLAJE, requiere_permiso, requiere_ver, usuario_actual, ve_todo, verificar_unidad
 from utils.historial import registrar
 from utils.comunes import filtrar_temporada, filtrar_unidades, obtener, temporada_al_guardar, temporada_seleccionada, unidad_dict
 from utils.db import get_db
@@ -126,7 +126,7 @@ def listar_reciclaje(empresa_id: int | None = None, unidad_id: int | None = None
 
 
 @router.post("/reciclaje", status_code=201)
-def crear_reciclaje(datos: ReciclajeEntrada, usuario: Usuario = Depends(solo_certificaciones),
+def crear_reciclaje(datos: ReciclajeEntrada, usuario: Usuario = Depends(requiere_permiso(AMBIENTE_RECICLAJE)),
                     db: Session = Depends(get_db), temporada: TemporadaLogica = Depends(temporada_seleccionada)) -> dict:
     verificar_unidad(usuario, datos.unidad_id)
     material = obtener(db, ConceptoAmbiental, datos.material_id)

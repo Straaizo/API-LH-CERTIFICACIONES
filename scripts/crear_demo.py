@@ -67,10 +67,13 @@ CLAVES_SUCURSAL = {
     "Packing MG": 114, "Planta Chocalán": 118, "Campo Itahue": 201,
 }
 PERMISOS = ["CERTIFICACIONES_ADMIN", "CERTIFICACIONES_VER", "CERTIFICACIONES_HISTORIAL",
-            "REGISTROS_VER", "REGISTROS_EDITAR", "NC_VER", "NC_EDITAR", "LABORATORIO_VER", "LABORATORIO_EDITAR",
-            "AMBIENTE_VER", "AMBIENTE_EDITAR", "AUDITORIAS_VER", "DOCUMENTOS_VER"]
-# Lo que ven los jefes además de lo que editan: auditorías y vencimientos en solo lectura
-VER_JEFES = ["AUDITORIAS_VER", "DOCUMENTOS_VER"]
+            "REGISTROS_VER", "REGISTROS_EDITAR", "REGISTROS_REVISAR", "PLANTILLAS_VER", "PLANTILLAS_EDITAR",
+            "DOCUMENTOS_VER", "DOCUMENTOS_EDITAR", "VENCIMIENTOS_VER",
+            "NC_VER", "NC_EDITAR", "NC_REVISAR", "LABORATORIO_VER", "LABORATORIO_EDITAR", "LABORATORIO_ASOEX",
+            "AMBIENTE_VER", "AMBIENTE_EDITAR", "AMBIENTE_RECICLAJE", "AUDITORIAS_VER", "AUDITORIAS_EDITAR",
+            "AUDITORIAS_EXTERNAS_VER", "AUDITORIAS_EXTERNAS_EDITAR", "IMPORTAR_PLANILLAS"]
+# Lo que ven los jefes además de lo que editan: auditorías y vencimientos en solo lectura (no documentos fijos)
+VER_JEFES = ["AUDITORIAS_VER", "VENCIMIENTOS_VER"]
 AREAS_PLANTA_CHOCALAN = ["Packing Unitec", "Packing cerezas", "Packing carozos", "Frío 1", "Frío 2", "Cámara 5",
                          "Zona sucia Unitec", "Patio", "Casino", "Baños", "Laboratorios", "Zona de desechos",
                          "Maestranza"]

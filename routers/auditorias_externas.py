@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session, selectinload
 
 from utils import almacenamiento
 from utils.proteccion import MAX_MB_ARCHIVO
-from utils.auth import solo_certificaciones, solo_ve_todo
+from utils.auth import AUDITORIAS_EXTERNAS, requiere_permiso, requiere_ver
 from utils.historial import registrar
 from utils.duplicados import error_duplicado, existente
 from utils.comunes import TemporadaLogica, obtener, temporada_al_guardar, temporada_seleccionada, unidad_dict
@@ -96,7 +96,7 @@ def _catalogos(db: Session) -> tuple[dict[int, Unidad], dict[int, Empresa]]:
 
 @router.get("")
 def listar(empresa_id: int | None = None, unidad_id: int | None = None, temporada_id: int | None = None,
-           protocolo_id: str | None = None, _: Usuario = Depends(solo_ve_todo),
+           protocolo_id: str | None = None, _: Usuario = Depends(requiere_ver("AUDITORIAS_EXTERNAS")),
            db: Session = Depends(get_db)) -> list[dict]:
     from utils.temporadas import buscar_temporada
 
@@ -198,7 +198,7 @@ def registrar_informe(db: Session, contenido: bytes, nombre: str, usuario: Usuar
 
 @router.post("", status_code=201)
 async def subir(archivos: list[UploadFile] = File(...), reemplazar: bool = Form(False),
-                usuario: Usuario = Depends(solo_certificaciones), db: Session = Depends(get_db),
+                usuario: Usuario = Depends(requiere_permiso(AUDITORIAS_EXTERNAS)), db: Session = Depends(get_db),
                 temporada: TemporadaLogica = Depends(temporada_seleccionada)) -> list[dict]:
     """Sube uno o varios informes; cada uno se lee y se guarda solo, sin campos que llenar.
     Si un PDF ya está subido (mismo nombre), avisa; con reemplazar=true reemplaza esa versión."""
@@ -237,14 +237,14 @@ async def subir(archivos: list[UploadFile] = File(...), reemplazar: bool = Form(
 
 
 @router.get("/{auditoria_id}")
-def detalle(auditoria_id: str, _: Usuario = Depends(solo_ve_todo), db: Session = Depends(get_db)) -> dict:
+def detalle(auditoria_id: str, _: Usuario = Depends(requiere_ver("AUDITORIAS_EXTERNAS")), db: Session = Depends(get_db)) -> dict:
     unidades, empresas = _catalogos(db)
     return _dict(obtener(db, AuditoriaExterna, auditoria_id), unidades, empresas, detalle=True)
 
 
 @router.post("/{auditoria_id}/versiones", status_code=201)
 async def nueva_version(auditoria_id: str, archivo: UploadFile = File(...), reemplazar: bool = Form(False),
-                        usuario: Usuario = Depends(solo_certificaciones), db: Session = Depends(get_db)) -> dict:
+                        usuario: Usuario = Depends(requiere_permiso(AUDITORIAS_EXTERNAS)), db: Session = Depends(get_db)) -> dict:
     auditoria = obtener(db, AuditoriaExterna, auditoria_id)
     contenido, nombre = await _leer_archivo(archivo)
     lectura = leer_auditoria_externa(contenido, nombre)
@@ -264,13 +264,13 @@ async def nueva_version(auditoria_id: str, archivo: UploadFile = File(...), reem
 
 
 @router.get("/versiones/{version_id}/descarga")
-def descargar(version_id: str, _: Usuario = Depends(solo_ve_todo), db: Session = Depends(get_db)) -> dict:
+def descargar(version_id: str, _: Usuario = Depends(requiere_ver("AUDITORIAS_EXTERNAS")), db: Session = Depends(get_db)) -> dict:
     version = obtener(db, AuditoriaExternaVersion, version_id)
     return {"url": almacenamiento.url_descarga(version.archivo_key, version.nombre_archivo)}
 
 
 @router.get("/{auditoria_id}/resumen.{formato}")
-def resumen(auditoria_id: str, formato: str, _: Usuario = Depends(solo_ve_todo),
+def resumen(auditoria_id: str, formato: str, _: Usuario = Depends(requiere_ver("AUDITORIAS_EXTERNAS")),
             db: Session = Depends(get_db)) -> Response:
     """Resumen del informe en PDF o Word."""
     if formato not in ("pdf", "docx"):

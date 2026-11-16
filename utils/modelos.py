@@ -171,7 +171,21 @@ NOMBRES_PERMISO = {
     "Ambiente - Ver consumos de la sucursal": "AMBIENTE_VER",
     "Ambiente - Editar consumos de la sucursal": "AMBIENTE_EDITAR",
     "Auditorías - Ver auditorías de la sucursal": "AUDITORIAS_VER",
-    "Documentos - Ver documentos y vencimientos": "DOCUMENTOS_VER",
+    "Documentos - Ver documentos y vencimientos": "DOCUMENTOS_VER",  # nombre anterior (16-11-2026)
+    # Permisos por acción (16-11-2026)
+    "Registros - Revisar, aprobar y asignar": "REGISTROS_REVISAR",
+    "Plantillas - Ver plantillas de registros": "PLANTILLAS_VER",
+    "Plantillas - Crear, importar y editar": "PLANTILLAS_EDITAR",
+    "Documentos - Ver documentos fijos": "DOCUMENTOS_VER",
+    "Documentos - Subir documentos y versiones": "DOCUMENTOS_EDITAR",
+    "Vencimientos - Ver certificados por vencer": "VENCIMIENTOS_VER",
+    "Laboratorio - Actualizar ASOEX y carta": "LABORATORIO_ASOEX",
+    "Auditorías - Planificar, responder y emitir": "AUDITORIAS_EDITAR",
+    "Auditorías externas - Ver informes": "AUDITORIAS_EXTERNAS_VER",
+    "Auditorías externas - Subir informes": "AUDITORIAS_EXTERNAS_EDITAR",
+    "NC - Revisar, devolver y cerrar": "NC_REVISAR",
+    "Ambiente - Registrar reciclaje": "AMBIENTE_RECICLAJE",
+    "Importar - Planillas BRCGS y normas": "IMPORTAR_PLANILLAS",
     "General - Ver todo sin editar (auditores)": PERMISO_VER,
     "General - Ver historial de cambios": PERMISO_HISTORIAL,
     "General - Administrar, aprobar y cerrar todo": PERMISO_ADMIN,
@@ -227,11 +241,12 @@ class Usuario(Base):
 
     @property
     def rol(self) -> str:
-        """certificaciones (ADMIN) | encargado (algún *_EDITAR) | lectura."""
+        """certificaciones (ADMIN) | encargado (algún permiso de acción) | lectura."""
         codigos = self.codigos_permiso
         if PERMISO_ADMIN in codigos:
             return "certificaciones"
-        if any(c.endswith("_EDITAR") for c in codigos):
+        # Cualquier permiso de acción (no solo de ver) permite subir archivos y escribir en su ámbito
+        if any(not c.endswith("_VER") and c != PERMISO_HISTORIAL for c in codigos):
             return "encargado"
         return "lectura"
 

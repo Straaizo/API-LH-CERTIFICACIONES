@@ -8,7 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
 from utils.proteccion import MAX_MB_ARCHIVO
-from utils.auth import NC, requiere_ver, solo_certificaciones, tiene_permiso, verificar_unidad
+from utils.auth import AUDITORIAS, IMPORTAR, NC, requiere_permiso, requiere_ver, tiene_permiso, verificar_unidad
 from utils.historial import registrar
 from utils.comunes import (
     TemporadaLogica, filtrar_temporada, filtrar_unidades, obtener, obtener_temporada, temporada_al_guardar,
@@ -118,8 +118,9 @@ def listar(empresa_id: int | None = None, unidad_id: int | None = None, temporad
 
 
 @router.post("/auditorias", status_code=201)
-def planificar(datos: AuditoriaEntrada, usuario: Usuario = Depends(solo_certificaciones),
+def planificar(datos: AuditoriaEntrada, usuario: Usuario = Depends(requiere_permiso(AUDITORIAS)),
                db: Session = Depends(get_db), temporada: TemporadaLogica = Depends(temporada_seleccionada)) -> dict:
+    verificar_unidad(usuario, datos.unidad_id)
     version = obtener(db, VersionNorma, datos.version_id)
     unidad = obtener(db, Unidad, datos.unidad_id)
     if not version.protocolo.aplica_a(unidad):
@@ -142,9 +143,10 @@ def planificar(datos: AuditoriaEntrada, usuario: Usuario = Depends(solo_certific
 
 
 @router.patch("/auditorias/{auditoria_id}")
-def modificar(auditoria_id: str, datos: AuditoriaCambios, usuario: Usuario = Depends(solo_certificaciones),
+def modificar(auditoria_id: str, datos: AuditoriaCambios, usuario: Usuario = Depends(requiere_permiso(AUDITORIAS)),
               db: Session = Depends(get_db), temporada: TemporadaLogica = Depends(temporada_seleccionada)) -> dict:
     auditoria = obtener(db, Auditoria, auditoria_id)
+    verificar_unidad(usuario, auditoria.unidad_id)
     cambios = datos.model_dump(exclude_unset=True)
     if "estado" in cambios and cambios["estado"] not in ("planificada", "en_curso", "cerrada"):
         raise HTTPException(400, "Estado inválido")
@@ -240,10 +242,11 @@ def _encargado_de(db: Session, unidad_id: int) -> Usuario | None:
 
 
 @router.post("/auditorias/{auditoria_id}/emitir")
-def emitir(auditoria_id: str, usuario: Usuario = Depends(solo_certificaciones), db: Session = Depends(get_db)) -> dict:
+def emitir(auditoria_id: str, usuario: Usuario = Depends(requiere_permiso(AUDITORIAS)), db: Session = Depends(get_db)) -> dict:
     """Emite el informe: cierra la auditoría y entrega cada no conformidad al jefe del campo o área,
     con plazo de 28 días para el análisis de causa raíz y las acciones correctiva y preventiva."""
     auditoria = obtener(db, Auditoria, auditoria_id)
+    verificar_unidad(usuario, auditoria.unidad_id)
     if auditoria.emitida_en:
         raise HTTPException(400, "El informe ya fue emitido")
     momento = ahora()
@@ -291,8 +294,9 @@ def exportar(auditoria_id: str, clausulas: str | None = None, usuario: Usuario =
 
 @router.put("/auditorias/{auditoria_id}/respuestas/{requisito_id}")
 def responder(auditoria_id: str, requisito_id: str, datos: RespuestaEntrada,
-              usuario: Usuario = Depends(solo_certificaciones), db: Session = Depends(get_db)) -> dict:
+              usuario: Usuario = Depends(requiere_permiso(AUDITORIAS)), db: Session = Depends(get_db)) -> dict:
     auditoria = obtener(db, Auditoria, auditoria_id)
+    verificar_unidad(usuario, auditoria.unidad_id)
     if auditoria.estado == "cerrada":
         raise HTTPException(400, "La auditoría está cerrada")
     if datos.resultado not in (None, "si", "no", "na"):
@@ -393,9 +397,11 @@ async def _leer_planilla(archivo: UploadFile) -> bytes:
 
 @router.post("/importaciones/brcgs")
 async def importar_auditoria_brcgs(archivo: UploadFile = File(...), confirmar: bool = Form(False),
-                                   unidad_id: int | None = Form(None), usuario: Usuario = Depends(solo_certificaciones),
+                                   unidad_id: int | None = Form(None), usuario: Usuario = Depends(requiere_permiso(IMPORTAR)),
                                    db: Session = Depends(get_db), temporada: TemporadaLogica = Depends(temporada_seleccionada)) -> dict:
     """Sin confirmar: vista previa con lo detectado y los errores de la planilla. Confirmado: guarda."""
+    if unidad_id is not None:
+        verificar_unidad(usuario, unidad_id)
     contenido = await _leer_planilla(archivo)
     try:
         return importar_brcgs(db, contenido, archivo.filename, usuario, confirmar, unidad_id, temporada)
@@ -405,7 +411,7 @@ async def importar_auditoria_brcgs(archivo: UploadFile = File(...), confirmar: b
 
 @router.post("/importaciones/checklist")
 async def importar_checklist_norma(archivo: UploadFile = File(...), confirmar: bool = Form(False),
-                                   protocolo: str | None = Form(None), usuario: Usuario = Depends(solo_certificaciones),
+                                   protocolo: str | None = Form(None), usuario: Usuario = Depends(requiere_permiso(IMPORTAR)),
                                    db: Session = Depends(get_db)) -> dict:
     """Checklist de una norma (GLOBALG.A.P. y add-on, GRASP, PrimusGFS). Sin confirmar: vista previa."""
     contenido = await _leer_planilla(archivo)

@@ -140,7 +140,8 @@ def test_modulos_visibles_por_permiso(sesion):
     """Ver un módulo: su _VER o _EDITAR; ADMIN y CERTIFICACIONES_VER ven todos. El permiso de otra app no cuenta."""
     from utils.auth import modulos_visibles, puede_ver, ve_todo
     admin, jefe = sesion.get(Usuario, "u-admin"), sesion.get(Usuario, "u-jefe")
-    assert modulos_visibles(admin) == ["REGISTROS", "DOCUMENTOS", "LABORATORIO", "AUDITORIAS", "NC", "AMBIENTE"]
+    assert modulos_visibles(admin) == ["REGISTROS", "DOCUMENTOS", "PLANTILLAS", "VENCIMIENTOS", "LABORATORIO",
+                                       "AUDITORIAS", "AUDITORIAS_EXTERNAS", "NC", "AMBIENTE", "IMPORTAR"]
     assert ve_todo(admin)
     # NC_EDITAR incluye ver NC; el CERTIFICACIONES_ADMIN de LH INVENTARIO (app 10) no le da nada aquí
     assert modulos_visibles(jefe) == ["NC"]
@@ -285,3 +286,33 @@ def test_brcgs_que_no_es_excel_da_mensaje_claro():
     from utils.importadores import leer_brcgs
     with pytest.raises(ValueError, match="xlsx válido"):
         leer_brcgs(b"no es un excel")
+
+
+
+def test_permisos_por_accion_y_sucursal(cliente, sesion):
+    """Cada acción exige su permiso; y quien no ve todo solo actúa en sus sucursales."""
+    from utils.auth import modulos_visibles, puede_ver
+    from utils.modelos import Usuario as U
+    _con_permiso(sesion, "u-rev", "revisor", "REGISTROS_REVISAR")
+    sesion.execute(insert(usuario_sucursales), [{"id_sucursal": 105, "id_usuario": "u-rev"}])
+    _con_permiso(sesion, "u-llena", "llenador", "REGISTROS_EDITAR")
+    _con_permiso(sesion, "u-doc", "lectordoc", "DOCUMENTOS_VER")
+    _con_permiso(sesion, "u-aud", "auditorext", "CERTIFICACIONES_VER")
+    sesion.commit()
+    # Ver documentos fijos ya no abre Vencimientos; CERTIFICACIONES_VER no ve Importar
+    assert modulos_visibles(sesion.get(U, "u-doc")) == ["DOCUMENTOS"]
+    assert not puede_ver(sesion.get(U, "u-aud"), "IMPORTAR") and puede_ver(sesion.get(U, "u-aud"), "AUDITORIAS_EXTERNAS")
+    cuerpo = {"plantilla_id": "no-existe", "unidad_id": 201, "titulo": "Prueba"}
+    # Llenar registros no permite crear ni asignar registros
+    assert cliente.post("/api/registros", json=cuerpo, headers=_cabeceras(cliente, "llenador")).status_code == 403
+    # El revisor puede crear, pero solo en sus sucursales (201 no es suya)
+    assert cliente.post("/api/registros", json=cuerpo, headers=_cabeceras(cliente, "revisor")).status_code == 403
+    cab = _cabeceras(cliente, "revisor")
+    assert cliente.post("/api/registros", json=cuerpo | {"unidad_id": 105}, headers=cab).status_code == 404
+    # Acciones de otros módulos: sin su permiso, 403
+    assert cliente.post("/api/auditorias", json={"version_id": "x", "unidad_id": 105, "fecha_inicio": "2026-12-01"},
+                        headers=cab).status_code == 403
+    assert cliente.post("/api/no-conformidades/x/cerrar", headers=cab).status_code == 403
+    assert cliente.post("/api/laboratorio/asoex", headers=cab, files={"archivos": ("a.xlsx", b"x")}).status_code == 403
+    assert cliente.post("/api/importaciones/checklist", headers=cab, files={"archivo": ("a.xlsx", b"x")}).status_code == 403
+    assert cliente.get("/api/vencimientos", headers=_cabeceras(cliente, "lectordoc")).status_code == 403

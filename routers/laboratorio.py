@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session, selectinload
 
 from utils import almacenamiento
 from utils.proteccion import MAX_MB_ARCHIVO
-from utils.auth import LABORATORIO, requiere_permiso, requiere_ver, verificar_unidad
+from utils.auth import LABORATORIO, LABORATORIO_ASOEX, requiere_permiso, requiere_ver, verificar_unidad
 from utils.historial import registrar
 from utils.duplicados import error_duplicado, existente
 from utils.comunes import (
@@ -299,7 +299,7 @@ def guardar_carta(db: Session, contenido: bytes, nombre: str, usuario: Usuario, 
 
 @router.post("/destinos", status_code=201)
 async def cargar_carta_destino(archivo: UploadFile = File(...), reemplazar: bool = Form(False),
-                               usuario: Usuario = Depends(requiere_permiso(LABORATORIO)),
+                               usuario: Usuario = Depends(requiere_permiso(LABORATORIO_ASOEX)),
                                db: Session = Depends(get_db)) -> dict:
     """Carga la carta de mercados de destino (PDF de GESEX). Con ella se preseleccionan los países por especie."""
     nombre = archivo.filename or "carta_destino.pdf"
@@ -347,7 +347,7 @@ def guardar_asoex(db: Session, contenido: bytes, nombre: str, usuario: Usuario) 
 
 @router.post("/asoex", status_code=201)
 async def cargar_asoex(archivos: list[UploadFile] = File(...), reemplazar: bool = Form(False),
-                       usuario: Usuario = Depends(requiere_permiso(LABORATORIO)), db: Session = Depends(get_db)) -> dict:
+                       usuario: Usuario = Depends(requiere_permiso(LABORATORIO_ASOEX)), db: Session = Depends(get_db)) -> dict:
     """Carga una o varias planillas de ASOEX (la general o las agendas por especie). Ninguna carga se borra:
     para cada especie se usa la planilla más reciente que la trae."""
     # Se leen primero: una planilla repetida puede venir con otro nombre (el navegador agrega "(2)", "(3)"…)

@@ -52,7 +52,7 @@ def dashboard(empresa_id: int | None = None, unidad_id: int | None = None, tempo
     temporada = buscar_temporada(db, temporada_id) if temporada_id else temporada_actual(db)
     t_id = temporada.id if temporada else None
     # Cada bloque solo con los módulos que el usuario puede ver; el resto queda vacío
-    ve = {m: puede_ver(usuario, m) for m in ("AUDITORIAS", "NC", "LABORATORIO", "DOCUMENTOS", "REGISTROS")}
+    ve = {m: puede_ver(usuario, m) for m in ("AUDITORIAS", "NC", "LABORATORIO", "VENCIMIENTOS", "REGISTROS")}
     auditorias = listar_auditorias(empresa_id=empresa_id, unidad_id=unidad_id, temporada_id=t_id,
                                    protocolo_id=protocolo_id, usuario=usuario, db=db) if ve["AUDITORIAS"] else []
     ncs = listar_nc(empresa_id=empresa_id, unidad_id=unidad_id, temporada_id=None, protocolo_id=protocolo_id,
@@ -60,7 +60,7 @@ def dashboard(empresa_id: int | None = None, unidad_id: int | None = None, tempo
                     usuario=usuario, db=db) if ve["NC"] else []
     analisis = listar_analisis(empresa_id=empresa_id, unidad_id=unidad_id, temporada_id=t_id, tipo_analisis_id=None,
                                solo_fuera_de_norma=False, usuario=usuario, db=db) if ve["LABORATORIO"] else []
-    vencimientos = calcular_vencimientos(db, usuario, empresa_id, unidad_id, protocolo_id) if ve["DOCUMENTOS"] else []
+    vencimientos = calcular_vencimientos(db, usuario, empresa_id, unidad_id, protocolo_id) if ve["VENCIMIENTOS"] else []
 
     empresas = db.scalars(select(Empresa).where(Empresa.id == empresa_id) if empresa_id else select(Empresa)).all()
     protocolos = db.scalars(select(Protocolo).where(Protocolo.id == protocolo_id) if protocolo_id

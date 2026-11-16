@@ -6,12 +6,17 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
 from utils import almacenamiento
-from utils.auth import NC, es_certificaciones, requiere_permiso, requiere_ver, solo_certificaciones, verificar_unidad
+from utils.auth import AUDITORIAS, NC, NC_REVISAR, requiere_permiso, requiere_ver, tiene_permiso, verificar_unidad
 from utils.historial import registrar
 from utils.comunes import filtrar_temporada, filtrar_unidades, obtener, unidad_dict
 from utils.db import get_db
 from utils.modelos import AccionCorrectiva, Area, Auditoria, NoConformidad, Usuario, VersionNorma
 from utils.hora import ahora
+
+def _ve_antes_de_emitir(usuario: Usuario) -> bool:
+    """Quien audita o revisa ve las no conformidades antes de que se emita el informe; el jefe de área, después."""
+    return tiene_permiso(usuario, AUDITORIAS) or tiene_permiso(usuario, NC_REVISAR)
+
 
 router = APIRouter(prefix="/no-conformidades")
 
@@ -109,7 +114,7 @@ def listar(empresa_id: int | None = None, unidad_id: int | None = None, temporad
     consulta = filtrar_unidades(
         select(NoConformidad).join(Auditoria).options(selectinload(NoConformidad.acciones)),
         NoConformidad.unidad_id, usuario, empresa_id, unidad_id)
-    if not es_certificaciones(usuario):
+    if not _ve_antes_de_emitir(usuario):
         # El jefe de campo o área ve las no conformidades cuando se emite el informe de la auditoría
         consulta = consulta.where(Auditoria.emitida_en.is_not(None))
     consulta = filtrar_temporada(db, consulta, temporada_id, NoConformidad.fecha_deteccion, NoConformidad.unidad_id,
@@ -134,7 +139,7 @@ def listar(empresa_id: int | None = None, unidad_id: int | None = None, temporad
 def detalle(nc_id: str, usuario: Usuario = Depends(requiere_ver("NC")), db: Session = Depends(get_db)) -> dict:
     nc = obtener(db, NoConformidad, nc_id)
     verificar_unidad(usuario, nc.unidad_id)
-    if not es_certificaciones(usuario) and not nc.auditoria.emitida_en:
+    if not _ve_antes_de_emitir(usuario) and not nc.auditoria.emitida_en:
         raise HTTPException(404, "El informe de esta auditoría aún no se emite")
     return _nc_dict(nc, detalle=True)
 
@@ -146,7 +151,7 @@ def guardar_plan(nc_id: str, datos: PlanAccion, usuario: Usuario = Depends(requi
     al enviar quedan para revisión de certificaciones."""
     nc = obtener(db, NoConformidad, nc_id)
     verificar_unidad(usuario, nc.unidad_id)
-    if not es_certificaciones(usuario) and not nc.auditoria.emitida_en:
+    if not _ve_antes_de_emitir(usuario) and not nc.auditoria.emitida_en:
         raise HTTPException(400, "El informe de esta auditoría aún no se emite")
     if nc.estado == "cerrada":
         raise HTTPException(400, "La no conformidad ya está cerrada")
@@ -179,9 +184,10 @@ def guardar_plan(nc_id: str, datos: PlanAccion, usuario: Usuario = Depends(requi
 
 
 @router.patch("/{nc_id}")
-def modificar(nc_id: str, datos: NcCambios, usuario: Usuario = Depends(solo_certificaciones),
+def modificar(nc_id: str, datos: NcCambios, usuario: Usuario = Depends(requiere_permiso(NC_REVISAR)),
               db: Session = Depends(get_db)) -> dict:
     nc = obtener(db, NoConformidad, nc_id)
+    verificar_unidad(usuario, nc.unidad_id)
     cambios = datos.model_dump(exclude_unset=True)
     if cambios.get("tipo") not in (None, *TIPOS):
         raise HTTPException(400, "Tipo inválido")
@@ -234,11 +240,12 @@ def _revision(nc: NoConformidad, usuario: Usuario, cumple: bool, observacion: st
 
 
 @router.post("/{nc_id}/revision")
-def revisar(nc_id: str, datos: Revision, usuario: Usuario = Depends(solo_certificaciones),
+def revisar(nc_id: str, datos: Revision, usuario: Usuario = Depends(requiere_permiso(NC_REVISAR)),
             db: Session = Depends(get_db)) -> dict:
     """Certificaciones revisa el plan y la evidencia del jefe de área.
     Cumple: se cierra (exige evidencia). No cumple: vuelve al jefe de área y cuenta como reincidencia."""
     nc = obtener(db, NoConformidad, nc_id)
+    verificar_unidad(usuario, nc.unidad_id)
     if nc.estado == "cerrada":
         raise HTTPException(400, "Ya está cerrada")
     if not nc.plan_enviado_en:
@@ -265,8 +272,9 @@ def revisar(nc_id: str, datos: Revision, usuario: Usuario = Depends(solo_certifi
 
 
 @router.post("/{nc_id}/cerrar")
-def cerrar(nc_id: str, usuario: Usuario = Depends(solo_certificaciones), db: Session = Depends(get_db)) -> dict:
+def cerrar(nc_id: str, usuario: Usuario = Depends(requiere_permiso(NC_REVISAR)), db: Session = Depends(get_db)) -> dict:
     nc = obtener(db, NoConformidad, nc_id)
+    verificar_unidad(usuario, nc.unidad_id)
     if nc.estado == "cerrada":
         raise HTTPException(400, "Ya está cerrada")
     if not any(a.archivo_key for a in nc.acciones):

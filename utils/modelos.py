@@ -184,9 +184,9 @@ NOMBRES_PERMISO = {
     "Medio ambiente - Combustibles - Registrar": "AMBIENTE_EDITAR",
     "Medio ambiente - Reciclaje - Registrar": "AMBIENTE_RECICLAJE",
     "Importar planillas - BRCGS y normas": "IMPORTAR_PLANILLAS",
-    "General - Administrar todo": PERMISO_ADMIN,
-    "General - Ver todo sin editar": PERMISO_VER,
-    "General - Historial de cambios": PERMISO_HISTORIAL,
+    "Administración - Todos los módulos - Editar": PERMISO_ADMIN,
+    "Administración - Todos los módulos - Ver": PERMISO_VER,
+    "Historial - Cambios - Ver": PERMISO_HISTORIAL,
     # Nombres anteriores, aceptados mientras se renombran en el portal
     # Nombres que usa hoy el portal (12-11-2026): uno por fila, "Módulo - Ver …" / "Módulo - Editar …"
     "Registros - Ver registros de la sucursal": "REGISTROS_VER",

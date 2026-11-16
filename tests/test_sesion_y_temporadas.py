@@ -330,3 +330,52 @@ def test_nombres_por_seccion():
     assert tiene_permiso(u, "PLANTILLAS_EDITAR") and not tiene_permiso(u, "REGISTROS_EDITAR")
     assert modulos_visibles(u) == ["PLANTILLAS", "VENCIMIENTOS"]
     assert len(nombres) == 25
+
+
+def test_ambiente_solo_sus_sucursales_y_combustibles(cliente, sesion):
+    """Quien registra consumos sin "ver todo" (administrativa, jefes) solo elige sus sucursales y solo combustibles,
+    aunque intente enviar otra cosa directamente a la API."""
+    from utils.modelos import ConceptoAmbiental
+    sesion.add_all([ConceptoAmbiental(codigo="combustible_diesel", nombre="Diésel", categoria="combustible",
+                                      unidad_medida="L", activo=True),
+                    ConceptoAmbiental(codigo="electricidad", nombre="Electricidad", categoria="electricidad",
+                                      unidad_medida="kWh", activo=True)])
+    _con_permiso(sesion, "u-adm", "administrativa", "AMBIENTE_EDITAR")
+    sesion.execute(insert(usuario_sucursales), [{"id_sucursal": 105, "id_usuario": "u-adm"}])
+    sesion.commit()
+    cab = _cabeceras(cliente, "administrativa") | {"X-Temporada": "2026"}
+    # El selector de sucursal solo trae las suyas
+    assert [u["id"] for u in cliente.get("/api/catalogos", headers=cab).json()["unidades"]] == [105]
+    base = {"unidad_id": 105, "fecha": "2026-10-15", "concepto": "combustible_diesel", "cantidad": 100}
+    assert cliente.post("/api/ambiente/consumos", json=base | {"unidad_id": 201}, headers=cab).status_code == 403
+    assert cliente.post("/api/ambiente/consumos", json=base | {"concepto": "electricidad"}, headers=cab).status_code == 400
+    assert cliente.post("/api/ambiente/consumos", json=base, headers=cab).status_code == 201
+
+
+def test_ambiente_todos_los_conceptos(cliente, sesion):
+    """Con "Consumos (todos)" se registran también electricidad y fertilizantes, pero solo en sus sucursales."""
+    from utils.modelos import ConceptoAmbiental
+    sesion.add_all([ConceptoAmbiental(codigo="combustible_diesel", nombre="Diésel", categoria="combustible",
+                                      unidad_medida="L", activo=True),
+                    ConceptoAmbiental(codigo="electricidad", nombre="Electricidad", categoria="electricidad",
+                                      unidad_medida="kWh", activo=True)])
+    _con_permiso(sesion, "u-mant", "mantencion", "Medio ambiente - Consumos (todos) - Registrar")
+    sesion.execute(insert(usuario_sucursales), [{"id_sucursal": 105, "id_usuario": "u-mant"}])
+    sesion.commit()
+    cab = _cabeceras(cliente, "mantencion") | {"X-Temporada": "2026"}
+    assert {c["codigo"] for c in cliente.get("/api/ambiente/conceptos", headers=cab).json()} == {"combustible_diesel", "electricidad"}
+    base = {"unidad_id": 105, "fecha": "2026-10-15", "concepto": "electricidad", "cantidad": 500}
+    assert cliente.post("/api/ambiente/consumos", json=base, headers=cab).status_code == 201
+    assert cliente.post("/api/ambiente/consumos", json=base | {"unidad_id": 201}, headers=cab).status_code == 403
+
+
+def test_importar_auditoria_y_normas_son_permisos_distintos(cliente, sesion):
+    """Importar una auditoría BRCGS (Auditorías internas) y cargar normas (Normas) se dan por separado."""
+    _con_permiso(sesion, "u-imp", "importador", "Auditorías - Internas - Importar desde Excel")
+    _con_permiso(sesion, "u-nor", "normas", "Normas - Checklist - Cargar")
+    sesion.commit()
+    archivo = {"archivo": ("a.xlsx", b"no es excel")}
+    imp, nor = _cabeceras(cliente, "importador"), _cabeceras(cliente, "normas")
+    assert cliente.post("/api/importaciones/checklist", headers=imp, files=archivo).status_code == 403
+    assert cliente.post("/api/importaciones/brcgs", headers=nor, files=archivo).status_code == 403
+    assert cliente.post("/api/importaciones/brcgs", headers=imp, files=archivo).status_code == 400

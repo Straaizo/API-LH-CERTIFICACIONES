@@ -6,7 +6,10 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
-from utils.auth import AMBIENTE, AMBIENTE_RECICLAJE, requiere_permiso, requiere_ver, usuario_actual, ve_todo, verificar_unidad
+from utils.auth import (
+    AMBIENTE, AMBIENTE_RECICLAJE, AMBIENTE_TODOS, requiere_permiso, requiere_ver, tiene_permiso, usuario_actual, ve_todo,
+    verificar_unidad,
+)
 from utils.historial import registrar
 from utils.comunes import filtrar_temporada, filtrar_unidades, obtener, temporada_al_guardar, temporada_seleccionada, unidad_dict
 from utils.db import get_db
@@ -46,9 +49,14 @@ def no_encargado(usuario: Usuario = Depends(usuario_actual)) -> Usuario:
     return usuario
 
 
+def _todos_los_conceptos(usuario: Usuario) -> bool:
+    """Quien ve todo o tiene "Consumos (todos)" trabaja con todos los conceptos; el resto, solo combustibles."""
+    return ve_todo(usuario) or tiene_permiso(usuario, AMBIENTE_TODOS)
+
+
 def _conceptos_consumo(db: Session, usuario: Usuario) -> list[ConceptoAmbiental]:
     consulta = select(ConceptoAmbiental).where(ConceptoAmbiental.categoria != RECICLAJE, ConceptoAmbiental.activo)
-    if not ve_todo(usuario):
+    if not _todos_los_conceptos(usuario):
         consulta = consulta.where(ConceptoAmbiental.categoria.in_(CATEGORIAS_ENCARGADO))
     return list(db.scalars(consulta.order_by(ConceptoAmbiental.categoria, ConceptoAmbiental.nombre)))
 
@@ -99,7 +107,7 @@ def listar_consumos(empresa_id: int | None = None, unidad_id: int | None = None,
 
 
 @router.post("/consumos", status_code=201)
-def crear_consumo(datos: ConsumoEntrada, usuario: Usuario = Depends(requiere_permiso(AMBIENTE)),
+def crear_consumo(datos: ConsumoEntrada, usuario: Usuario = Depends(requiere_permiso(AMBIENTE, AMBIENTE_TODOS)),
                   db: Session = Depends(get_db), temporada: TemporadaLogica = Depends(temporada_seleccionada)) -> dict:
     verificar_unidad(usuario, datos.unidad_id)
     concepto = next((c for c in _conceptos_consumo(db, usuario) if c.codigo == datos.concepto), None)
@@ -243,7 +251,7 @@ def informe(empresa_id: int | None = None, unidad_id: int | None = None, tempora
             db: Session = Depends(get_db)) -> Response:
     """Informe formal en PDF de la comparativa. Los encargados (administrativos, aplicaciones) reciben solo
     combustibles, lo mismo que ven en pantalla."""
-    categorias = None if ve_todo(usuario) else CATEGORIAS_ENCARGADO
+    categorias = None if _todos_los_conceptos(usuario) else CATEGORIAS_ENCARGADO
     datos = datos_comparativa(db, usuario, empresa_id, unidad_id, temporada_id, anterior_id, categorias)
     if unidad_id:
         alcance = obtener(db, Unidad, unidad_id).etiqueta

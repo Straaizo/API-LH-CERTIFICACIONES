@@ -8,7 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
 from utils.proteccion import MAX_MB_ARCHIVO
-from utils.auth import AUDITORIAS, IMPORTAR, NC, requiere_permiso, requiere_ver, tiene_permiso, verificar_unidad
+from utils.auth import AUDITORIAS, AUDITORIAS_IMPORTAR, IMPORTAR, NC, requiere_permiso, requiere_ver, tiene_permiso, verificar_unidad
 from utils.historial import registrar
 from utils.comunes import (
     TemporadaLogica, filtrar_temporada, filtrar_unidades, obtener, obtener_temporada, temporada_al_guardar,
@@ -397,7 +397,7 @@ async def _leer_planilla(archivo: UploadFile) -> bytes:
 
 @router.post("/importaciones/brcgs")
 async def importar_auditoria_brcgs(archivo: UploadFile = File(...), confirmar: bool = Form(False),
-                                   unidad_id: int | None = Form(None), usuario: Usuario = Depends(requiere_permiso(IMPORTAR)),
+                                   unidad_id: int | None = Form(None), usuario: Usuario = Depends(requiere_permiso(AUDITORIAS_IMPORTAR)),
                                    db: Session = Depends(get_db), temporada: TemporadaLogica = Depends(temporada_seleccionada)) -> dict:
     """Sin confirmar: vista previa con lo detectado y los errores de la planilla. Confirmado: guarda."""
     if unidad_id is not None:

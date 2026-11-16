@@ -29,10 +29,12 @@ NC_REVISAR = "NC_REVISAR"                 # devolver, cerrar y reasignar no conf
 LABORATORIO = "LABORATORIO_EDITAR"        # análisis y residuos (MRL)
 LABORATORIO_ASOEX = "LABORATORIO_ASOEX"   # actualizar ASOEX y la carta de destino
 AMBIENTE = "AMBIENTE_EDITAR"              # consumos de combustible
+AMBIENTE_TODOS = "AMBIENTE_TODOS"        # ver y registrar todos los conceptos (electricidad, fertilizantes…)
 AMBIENTE_RECICLAJE = "AMBIENTE_RECICLAJE" # registrar reciclaje
 AUDITORIAS = "AUDITORIAS_EDITAR"          # planificar, responder y emitir auditorías internas
+AUDITORIAS_IMPORTAR = "AUDITORIAS_IMPORTAR"  # importar auditorías internas hechas en Excel (BRCGS)
 AUDITORIAS_EXTERNAS = "AUDITORIAS_EXTERNAS_EDITAR"  # subir informes externos
-IMPORTAR = "IMPORTAR_PLANILLAS"           # importar BRCGS y checklist de normas
+IMPORTAR = "IMPORTAR_PLANILLAS"           # Normas: cargar checklist oficiales y sus versiones
 
 # Módulos que se ven: con cualquiera de sus permisos. CERTIFICACIONES_ADMIN ve todos; CERTIFICACIONES_VER (auditores,
 # solo lectura) ve todos menos Importar, que es una acción.
@@ -42,10 +44,10 @@ PERMISOS_MODULO: dict[str, set[str]] = {
     "PLANTILLAS": {"PLANTILLAS_VER", PLANTILLAS},
     "VENCIMIENTOS": {"VENCIMIENTOS_VER"},
     "LABORATORIO": {"LABORATORIO_VER", LABORATORIO, LABORATORIO_ASOEX},
-    "AUDITORIAS": {"AUDITORIAS_VER", AUDITORIAS},
+    "AUDITORIAS": {"AUDITORIAS_VER", AUDITORIAS, AUDITORIAS_IMPORTAR},
     "AUDITORIAS_EXTERNAS": {"AUDITORIAS_EXTERNAS_VER", AUDITORIAS_EXTERNAS},
     "NC": {"NC_VER", NC, NC_REVISAR},
-    "AMBIENTE": {"AMBIENTE_VER", AMBIENTE, AMBIENTE_RECICLAJE},
+    "AMBIENTE": {"AMBIENTE_VER", AMBIENTE, AMBIENTE_TODOS, AMBIENTE_RECICLAJE},
     "IMPORTAR": {IMPORTAR},
 }
 MODULOS = tuple(PERMISOS_MODULO)

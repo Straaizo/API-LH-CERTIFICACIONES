@@ -316,3 +316,17 @@ def test_permisos_por_accion_y_sucursal(cliente, sesion):
     assert cliente.post("/api/laboratorio/asoex", headers=cab, files={"archivos": ("a.xlsx", b"x")}).status_code == 403
     assert cliente.post("/api/importaciones/checklist", headers=cab, files={"archivo": ("a.xlsx", b"x")}).status_code == 403
     assert cliente.get("/api/vencimientos", headers=_cabeceras(cliente, "lectordoc")).status_code == 403
+
+
+def test_nombres_por_seccion():
+    """Formato "Sección - Apartado - Acción": cada nombre del portal se traduce a su permiso."""
+    from utils.auth import modulos_visibles, tiene_permiso
+    from utils.modelos import NOMBRES_PERMISO, Permiso
+    nombres = [n for n in NOMBRES_PERMISO if n.count(" - ") >= 1][:25]
+    assert all(len(n) <= 45 for n in NOMBRES_PERMISO)
+    u = Usuario(id="u-y", usuario="y", nombre="Y", id_estado=1, permisos=[
+        Permiso(id="a", nombre="Registros - Plantillas - Crear y editar", app_id=Config.APP_ID, id_estado=1),
+        Permiso(id="b", nombre="Vencimientos - Ver", app_id=Config.APP_ID, id_estado=1)])
+    assert tiene_permiso(u, "PLANTILLAS_EDITAR") and not tiene_permiso(u, "REGISTROS_EDITAR")
+    assert modulos_visibles(u) == ["PLANTILLAS", "VENCIMIENTOS"]
+    assert len(nombres) == 25

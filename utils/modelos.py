@@ -161,6 +161,33 @@ PERMISO_HISTORIAL = "CERTIFICACIONES_HISTORIAL"
 # Nombre que ve quien asigna permisos en el portal web (usuario_dim_permiso.nombre, máx. 45 caracteres) → código
 # que usa la API. Los códigos solos (REGISTROS_EDITAR...) también se aceptan, por compatibilidad.
 NOMBRES_PERMISO = {
+    # Nombres por sección (16-11-2026): "Sección - Apartado - Acción", como el menú de la aplicación
+    "Registros - Documentos fijos - Ver": "DOCUMENTOS_VER",
+    "Registros - Documentos fijos - Subir y editar": "DOCUMENTOS_EDITAR",
+    "Registros - Registros - Ver": "REGISTROS_VER",
+    "Registros - Registros - Llenar y enviar": "REGISTROS_EDITAR",
+    "Registros - Registros - Revisar y asignar": "REGISTROS_REVISAR",
+    "Registros - Plantillas - Ver": "PLANTILLAS_VER",
+    "Registros - Plantillas - Crear y editar": "PLANTILLAS_EDITAR",
+    "Vencimientos - Ver": "VENCIMIENTOS_VER",
+    "Laboratorio - Análisis y MRL - Ver": "LABORATORIO_VER",
+    "Laboratorio - Análisis y MRL - Cargar": "LABORATORIO_EDITAR",
+    "Laboratorio - ASOEX y carta - Actualizar": "LABORATORIO_ASOEX",
+    "Auditorías - Internas - Ver": "AUDITORIAS_VER",
+    "Auditorías - Internas - Planificar y emitir": "AUDITORIAS_EDITAR",
+    "Auditorías - Externas - Ver": "AUDITORIAS_EXTERNAS_VER",
+    "Auditorías - Externas - Subir informes": "AUDITORIAS_EXTERNAS_EDITAR",
+    "No conformidades - Ver": "NC_VER",
+    "No conformidades - Plan y evidencia": "NC_EDITAR",
+    "No conformidades - Revisar y cerrar": "NC_REVISAR",
+    "Medio ambiente - Combustibles - Ver": "AMBIENTE_VER",
+    "Medio ambiente - Combustibles - Registrar": "AMBIENTE_EDITAR",
+    "Medio ambiente - Reciclaje - Registrar": "AMBIENTE_RECICLAJE",
+    "Importar planillas - BRCGS y normas": "IMPORTAR_PLANILLAS",
+    "General - Administrar todo": PERMISO_ADMIN,
+    "General - Ver todo sin editar": PERMISO_VER,
+    "General - Historial de cambios": PERMISO_HISTORIAL,
+    # Nombres anteriores, aceptados mientras se renombran en el portal
     # Nombres que usa hoy el portal (12-11-2026): uno por fila, "Módulo - Ver …" / "Módulo - Editar …"
     "Registros - Ver registros de la sucursal": "REGISTROS_VER",
     "Registros - Editar registros de la sucursal": "REGISTROS_EDITAR",

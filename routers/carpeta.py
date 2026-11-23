@@ -50,6 +50,8 @@ def carpeta_auditor(protocolo_id: str, empresa_id: int, temporada_id: int, unida
         verificar_unidad(usuario, unidad.id)
     elif usuario.rol == "encargado":
         raise HTTPException(403, "Indica una de tus sucursales")
+    elif empresa.id not in {u.empresa_id for u in usuario.unidades}:
+        raise HTTPException(403, "No tienes sucursales habilitadas en esa empresa")
 
     consulta = select(Documento).where(
         Documento.empresa_id == empresa.id,

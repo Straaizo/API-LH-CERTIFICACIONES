@@ -4,7 +4,7 @@ Usuarios, acceso a la aplicación, permisos y sucursales vienen del portal web (
 - acceso: usuario_pivot_app_usuario con id_app = Config.APP_ID
 - permisos: usuario_dim_permiso de esa app (CERTIFICACIONES_ADMIN, REGISTROS_EDITAR, ..., CERTIFICACIONES_VER,
   CERTIFICACIONES_HISTORIAL)
-- sucursales: usuario_pivot_sucursal_usuario (el administrador ve todas)
+- sucursales: usuario_pivot_sucursal_usuario (todos, incluido el administrador, ven solo las suyas)
 """
 import hmac
 from datetime import datetime, timedelta, timezone
@@ -224,9 +224,7 @@ def requiere_ver_alguno(*modulos: str):
 
 
 def unidades_permitidas(usuario: Usuario) -> set[int] | None:
-    """Sucursales que ve el usuario. None = todas (CERTIFICACIONES_ADMIN o CERTIFICACIONES_VER)."""
-    if ve_todo(usuario):
-        return None
+    """Sucursales que ve el usuario: solo las habilitadas en el portal web, también para el administrador."""
     return {u.id for u in usuario.unidades}
 
 

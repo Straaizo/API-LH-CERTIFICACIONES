@@ -266,7 +266,8 @@ def crear_catalogos(db: Session) -> dict:
 
     con_normas = sorted({i for ids in NORMAS_POR_SUCURSAL.values() for i in ids})
     usuarios = {
-        "cert": crear_usuario(db, "certificaciones", "Equipo Certificaciones", ["CERTIFICACIONES_ADMIN", "CERTIFICACIONES_HISTORIAL"], []),
+        "cert": crear_usuario(db, "certificaciones", "Equipo Certificaciones", ["CERTIFICACIONES_ADMIN", "CERTIFICACIONES_HISTORIAL"],
+                              [db.get(Unidad, i) for i in con_normas]),
         "planta": crear_usuario(db, "planta", "Jefe de área · Planta Chocalán", ["REGISTROS_EDITAR", "NC_EDITAR", "LABORATORIO_VER", *VER_JEFES],
                                 [u["Planta Chocalán"]]),
         "campo": crear_usuario(db, "campo", "Jefe de campo · Chocalán e Itahue",

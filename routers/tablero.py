@@ -10,7 +10,7 @@ from routers.documentos import calcular_vencimientos
 from routers.laboratorio import listar as listar_analisis
 from routers.no_conformidades import listar as listar_nc
 from routers.registros import _atraso
-from utils.auth import puede_ver, solo_historial, usuario_actual, ve_todo
+from utils.auth import unidades_permitidas, puede_ver, solo_historial, usuario_actual, ve_todo
 from utils.comunes import buscar_temporada, filtrar_unidades, temporada_actual
 from utils.db import get_db
 from utils.modelos import (
@@ -67,6 +67,7 @@ def dashboard(empresa_id: int | None = None, unidad_id: int | None = None, tempo
                             else select(Protocolo).order_by(Protocolo.ambito, Protocolo.nombre)).all()
     semaforo = []
     # El semáforo es el estado de ambas empresas: solo para quien ve todo (certificaciones o lectura total)
+    permitidas = unidades_permitidas(usuario)
     for e in (empresas if ve_todo(usuario) else []):
         for p in protocolos:
             certs = db.scalars(select(Certificacion).where(Certificacion.empresa_id == e.id,
@@ -74,7 +75,7 @@ def dashboard(empresa_id: int | None = None, unidad_id: int | None = None, tempo
                                .order_by(Certificacion.vigente_hasta.desc())).all()
             if unidad_id:
                 certs = [c for c in certs if unidad_id in {u.id for u in c.unidades}]
-            unidades_e = [u for u in e.sucursales if not unidad_id or u.id == unidad_id]
+            unidades_e = [u for u in e.sucursales if (not unidad_id or u.id == unidad_id) and u.id in permitidas]
             if not any(p.aplica_a(u) for u in unidades_e):
                 continue
             aud = [a for a in auditorias if a["protocolo"]["id"] == p.id and a["unidad"]["empresa_id"] == e.id

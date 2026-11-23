@@ -53,7 +53,9 @@ def sesion():
     db.execute(insert(usuario_permisos), [{"id": "x1", "id_usuario": "u-admin", "id_permiso": "p-admin"},
                                           {"id": "x2", "id_usuario": "u-jefe", "id_permiso": "p-nc"},
                                           {"id": "x3", "id_usuario": "u-jefe", "id_permiso": "p-otra"}])
-    db.execute(insert(usuario_sucursales), [{"id_sucursal": 201, "id_usuario": "u-jefe"}])
+    db.execute(insert(usuario_sucursales), [{"id_sucursal": 201, "id_usuario": "u-jefe"},
+                                            {"id_sucursal": 105, "id_usuario": "u-admin"},
+                                            {"id_sucursal": 201, "id_usuario": "u-admin"}])
     db.commit()
     yield db
     db.close()
@@ -108,7 +110,12 @@ def test_permisos_solo_de_esta_app_y_sucursales(sesion):
     # El ADMIN de otra app no cuenta: es encargado por NC_EDITAR y ve solo su sucursal
     assert jefe.codigos_permiso == {"NC_EDITAR"} and jefe.rol == "encargado"
     assert unidades_permitidas(jefe) == {201}
-    assert unidades_permitidas(sesion.get(Usuario, "u-admin")) is None
+    # El administrador también ve solo las sucursales habilitadas en el portal web
+    assert unidades_permitidas(sesion.get(Usuario, "u-admin")) == {105, 201}
+    sesion.execute(usuario_sucursales.delete().where(usuario_sucursales.c.id_usuario == "u-admin",
+                                                     usuario_sucursales.c.id_sucursal == 201))
+    sesion.expire_all()
+    assert unidades_permitidas(sesion.get(Usuario, "u-admin")) == {105}
 
 
 def test_temporadas_por_empresa(sesion):
@@ -250,11 +257,13 @@ def _cabeceras(cliente, usuario: str) -> dict:
     return {"Authorization": f"Bearer {token}"}
 
 
-def test_certificaciones_ver_ve_todas_las_sucursales_y_externas_sin_subir(cliente, sesion):
+def test_certificaciones_ver_ve_solo_sus_sucursales_y_externas_sin_subir(cliente, sesion):
     _con_permiso(sesion, "u-ver", "lector", "CERTIFICACIONES_VER")
-    assert unidades_permitidas(sesion.get(Usuario, "u-ver")) is None
+    sesion.execute(insert(usuario_sucursales), [{"id_sucursal": 201, "id_usuario": "u-ver"}])
+    sesion.commit()
+    assert unidades_permitidas(sesion.get(Usuario, "u-ver")) == {201}
     cab = _cabeceras(cliente, "lector")
-    assert {u["id"] for u in cliente.get("/api/catalogos", headers=cab).json()["unidades"]} == {105, 201}
+    assert {u["id"] for u in cliente.get("/api/catalogos", headers=cab).json()["unidades"]} == {201}
     assert cliente.get("/api/auditorias-externas", headers=cab).status_code == 200
     r = cliente.post("/api/auditorias-externas", headers=cab, files={"archivos": ("a.pdf", b"%PDF-1.4", "application/pdf")})
     assert r.status_code == 403

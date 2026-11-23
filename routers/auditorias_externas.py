@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session, selectinload
 
 from utils import almacenamiento
 from utils.proteccion import MAX_MB_ARCHIVO
-from utils.auth import AUDITORIAS_EXTERNAS, requiere_permiso, requiere_ver
+from utils.auth import AUDITORIAS_EXTERNAS, requiere_permiso, requiere_ver, unidades_permitidas
 from utils.historial import registrar
 from utils.duplicados import error_duplicado, existente
 from utils.comunes import TemporadaLogica, obtener, temporada_al_guardar, temporada_seleccionada, unidad_dict
@@ -90,13 +90,28 @@ def _dict(a: AuditoriaExterna, unidades: dict[int, Unidad], empresas: dict[int, 
     return datos
 
 
+def _visible(usuario: Usuario, a: AuditoriaExterna) -> bool:
+    """Solo informes de sucursales habilitadas al usuario; sin sucursal detectada, basta una sucursal de la empresa."""
+    permitidas = unidades_permitidas(usuario)
+    if a.sucursales_auditadas:
+        return bool(permitidas & set(a.sucursales_auditadas))
+    return a.empresa_id in {u.empresa_id for u in usuario.unidades}
+
+
+def _obtener_visible(db: Session, usuario: Usuario, auditoria_id: str) -> AuditoriaExterna:
+    auditoria = obtener(db, AuditoriaExterna, auditoria_id)
+    if not _visible(usuario, auditoria):
+        raise HTTPException(403, "No tienes acceso a las sucursales de este informe")
+    return auditoria
+
+
 def _catalogos(db: Session) -> tuple[dict[int, Unidad], dict[int, Empresa]]:
     return ({u.id: u for u in db.scalars(select(Unidad))}, {e.id: e for e in db.scalars(select(Empresa))})
 
 
 @router.get("")
 def listar(empresa_id: int | None = None, unidad_id: int | None = None, temporada_id: int | None = None,
-           protocolo_id: str | None = None, _: Usuario = Depends(requiere_ver("AUDITORIAS_EXTERNAS")),
+           protocolo_id: str | None = None, usuario: Usuario = Depends(requiere_ver("AUDITORIAS_EXTERNAS")),
            db: Session = Depends(get_db)) -> list[dict]:
     from utils.temporadas import buscar_temporada
 
@@ -105,7 +120,7 @@ def listar(empresa_id: int | None = None, unidad_id: int | None = None, temporad
     salida = []
     for a in db.scalars(select(AuditoriaExterna).options(selectinload(AuditoriaExterna.versiones),
                                                          selectinload(AuditoriaExterna.protocolo))):
-        if empresa_id and a.empresa_id != empresa_id:
+        if not _visible(usuario, a) or (empresa_id and a.empresa_id != empresa_id):
             continue
         if unidad_id and unidad_id not in a.sucursales_auditadas:
             continue
@@ -151,6 +166,8 @@ def _version_igual(db: Session, lectura) -> AuditoriaExternaVersion | None:
 
 def _reemplazar_version(db: Session, version: AuditoriaExternaVersion, contenido: bytes, nombre: str, usuario: Usuario) -> dict:
     """Reemplaza el archivo y el resumen de una versión ya subida (mismo número de versión)."""
+    if not _visible(usuario, version.auditoria):
+        raise HTTPException(403, "El informe es de sucursales que no tienes habilitadas en el portal web")
     lectura = leer_auditoria_externa(contenido, nombre)
     clave = almacenamiento.nueva_clave("auditorias_externas", nombre)
     almacenamiento.escribir(clave, contenido, "application/pdf")
@@ -188,6 +205,8 @@ def registrar_informe(db: Session, contenido: bytes, nombre: str, usuario: Usuar
         )
         db.add(auditoria)
         nueva = True
+    if not _visible(usuario, auditoria):
+        raise HTTPException(403, "El informe es de sucursales que no tienes habilitadas en el portal web")
     version = _nueva_version(db, auditoria, contenido, nombre, lectura, usuario)
     db.flush()
     registrar(db, usuario, "subir", "auditoria_externa", auditoria.id,
@@ -237,15 +256,16 @@ async def subir(archivos: list[UploadFile] = File(...), reemplazar: bool = Form(
 
 
 @router.get("/{auditoria_id}")
-def detalle(auditoria_id: str, _: Usuario = Depends(requiere_ver("AUDITORIAS_EXTERNAS")), db: Session = Depends(get_db)) -> dict:
+def detalle(auditoria_id: str, usuario: Usuario = Depends(requiere_ver("AUDITORIAS_EXTERNAS")),
+            db: Session = Depends(get_db)) -> dict:
     unidades, empresas = _catalogos(db)
-    return _dict(obtener(db, AuditoriaExterna, auditoria_id), unidades, empresas, detalle=True)
+    return _dict(_obtener_visible(db, usuario, auditoria_id), unidades, empresas, detalle=True)
 
 
 @router.post("/{auditoria_id}/versiones", status_code=201)
 async def nueva_version(auditoria_id: str, archivo: UploadFile = File(...), reemplazar: bool = Form(False),
                         usuario: Usuario = Depends(requiere_permiso(AUDITORIAS_EXTERNAS)), db: Session = Depends(get_db)) -> dict:
-    auditoria = obtener(db, AuditoriaExterna, auditoria_id)
+    auditoria = _obtener_visible(db, usuario, auditoria_id)
     contenido, nombre = await _leer_archivo(archivo)
     lectura = leer_auditoria_externa(contenido, nombre)
     repetida = next((v for v in auditoria.versiones if v.nombre_archivo == nombre or v.resumen == _resumen(lectura)), None)
@@ -264,19 +284,21 @@ async def nueva_version(auditoria_id: str, archivo: UploadFile = File(...), reem
 
 
 @router.get("/versiones/{version_id}/descarga")
-def descargar(version_id: str, _: Usuario = Depends(requiere_ver("AUDITORIAS_EXTERNAS")), db: Session = Depends(get_db)) -> dict:
+def descargar(version_id: str, usuario: Usuario = Depends(requiere_ver("AUDITORIAS_EXTERNAS")),
+              db: Session = Depends(get_db)) -> dict:
     version = obtener(db, AuditoriaExternaVersion, version_id)
+    _obtener_visible(db, usuario, version.auditoria_externa_id)
     return {"url": almacenamiento.url_descarga(version.archivo_key, version.nombre_archivo)}
 
 
 @router.get("/{auditoria_id}/resumen.{formato}")
-def resumen(auditoria_id: str, formato: str, _: Usuario = Depends(requiere_ver("AUDITORIAS_EXTERNAS")),
+def resumen(auditoria_id: str, formato: str, usuario: Usuario = Depends(requiere_ver("AUDITORIAS_EXTERNAS")),
             db: Session = Depends(get_db)) -> Response:
     """Resumen del informe en PDF o Word."""
     if formato not in ("pdf", "docx"):
         raise HTTPException(404, "Formato no disponible")
     unidades, empresas = _catalogos(db)
-    datos = _dict(obtener(db, AuditoriaExterna, auditoria_id), unidades, empresas, detalle=True)
+    datos = _dict(_obtener_visible(db, usuario, auditoria_id), unidades, empresas, detalle=True)
     nombre = nombre_archivo_seguro(f"Resumen {datos['titulo']} {datos['tipo_nombre']}", 120)
     if formato == "pdf":
         return Response(resumen_pdf(datos), media_type="application/pdf",

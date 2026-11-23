@@ -228,6 +228,18 @@ def unidades_permitidas(usuario: Usuario) -> set[int] | None:
     return {u.id for u in usuario.unidades}
 
 
+def unidad_para_descarga(usuario: Usuario, unidad_id: int | None) -> int:
+    """Toda descarga corresponde a una sucursal: la indicada, o la única que tiene el usuario."""
+    if unidad_id is not None:
+        verificar_unidad(usuario, unidad_id)
+        return unidad_id
+    permitidas = unidades_permitidas(usuario)
+    if len(permitidas) == 1:
+        return next(iter(permitidas))
+    raise HTTPException(400, "Elige a qué sucursal corresponde la descarga" if permitidas
+                        else "No tienes sucursales habilitadas en el portal web")
+
+
 def verificar_unidad(usuario: Usuario, unidad_id: int | None) -> None:
     permitidas = unidades_permitidas(usuario)
     if permitidas is None:

@@ -53,7 +53,8 @@ def catalogos(usuario: Usuario = Depends(usuario_actual), db: Session = Depends(
     actual = temporada_actual(db)
     return {
         "empresas": [{"id": e.id, "codigo": e.codigo, "nombre": e.nombre}
-                     for e in db.scalars(select(Empresa).order_by(Empresa.id))],
+                     for e in db.scalars(select(Empresa).order_by(Empresa.id))
+                     if any(u.empresa_id == e.id for u in unidades)],
         "unidades": [unidad_dict(u) for u in unidades],
         "areas": [{"id": a.id, "nombre": a.nombre, "unidad_id": a.unidad_id}
                   for a in db.scalars(select(Area).order_by(Area.nombre)) if a.unidad_id in ids],

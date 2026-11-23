@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session
 from routers.auditorias import detalle as detalle_auditoria
 from routers.documentos import version_vigente
 from utils import almacenamiento
-from utils.auth import requiere_ver, verificar_unidad
+from utils.auth import requiere_ver, unidad_para_descarga
 from utils.comunes import en_temporada, obtener, obtener_temporada
 from utils.db import get_db
 from utils.modelos import (
@@ -45,13 +45,9 @@ def carpeta_auditor(protocolo_id: str, empresa_id: int, temporada_id: int, unida
     protocolo = obtener(db, Protocolo, protocolo_id)
     empresa = obtener(db, Empresa, empresa_id)
     temporada = obtener_temporada(db, temporada_id)
-    unidad = obtener(db, Unidad, unidad_id) if unidad_id else None
-    if unidad:
-        verificar_unidad(usuario, unidad.id)
-    elif usuario.rol == "encargado":
-        raise HTTPException(403, "Indica una de tus sucursales")
-    elif empresa.id not in {u.empresa_id for u in usuario.unidades}:
-        raise HTTPException(403, "No tienes sucursales habilitadas en esa empresa")
+    unidad = obtener(db, Unidad, unidad_para_descarga(usuario, unidad_id))
+    if unidad.empresa_id != empresa.id:
+        raise HTTPException(400, "La sucursal no es de esa empresa")
 
     consulta = select(Documento).where(
         Documento.empresa_id == empresa.id,

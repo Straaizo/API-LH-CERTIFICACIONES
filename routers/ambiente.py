@@ -8,13 +8,13 @@ from sqlalchemy.orm import Session, selectinload
 
 from utils.auth import (
     AMBIENTE, AMBIENTE_RECICLAJE, AMBIENTE_TODOS, requiere_permiso, requiere_ver, tiene_permiso, usuario_actual, ve_todo,
-    verificar_unidad,
+    unidad_para_descarga, verificar_unidad,
 )
 from utils.historial import registrar
 from utils.comunes import filtrar_temporada, filtrar_unidades, obtener, temporada_al_guardar, temporada_seleccionada, unidad_dict
 from utils.db import get_db
 from utils.informe_ambiente import informe_pdf
-from utils.modelos import ConceptoAmbiental, Empresa, FactorEmision, RegistroAmbiental, Unidad, Usuario
+from utils.modelos import ConceptoAmbiental, FactorEmision, RegistroAmbiental, Unidad, Usuario
 from utils.temporadas import (
     TemporadaLogica, buscar_temporada, en_temporada, listar_temporadas, obtener_temporada, temporada_actual,
     temporada_anterior, temporada_para_fecha,
@@ -251,14 +251,10 @@ def informe(empresa_id: int | None = None, unidad_id: int | None = None, tempora
             db: Session = Depends(get_db)) -> Response:
     """Informe formal en PDF de la comparativa. Los encargados (administrativos, aplicaciones) reciben solo
     combustibles, lo mismo que ven en pantalla."""
+    unidad_id = unidad_para_descarga(usuario, unidad_id)
     categorias = None if _todos_los_conceptos(usuario) else CATEGORIAS_ENCARGADO
     datos = datos_comparativa(db, usuario, empresa_id, unidad_id, temporada_id, anterior_id, categorias)
-    if unidad_id:
-        alcance = obtener(db, Unidad, unidad_id).etiqueta
-    elif empresa_id:
-        alcance = obtener(db, Empresa, empresa_id).nombre.title()
-    else:
-        alcance = "Todas las sucursales" if ve_todo(usuario) else "Mis sucursales"
+    alcance = obtener(db, Unidad, unidad_id).etiqueta
     contenido = informe_pdf(datos, alcance=alcance, solo_combustibles=categorias is not None,
                             emitido_por=usuario.nombre or usuario.usuario)
     nombre = f"Informe medio ambiente {datos['actual']['nombre']} {alcance}.pdf".replace("/", "-")

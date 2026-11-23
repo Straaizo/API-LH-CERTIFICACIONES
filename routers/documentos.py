@@ -16,7 +16,7 @@ from schemas.documentos import (
 from utils import almacenamiento
 from utils.auth import (
     DOCUMENTOS, puede_escribir, puede_ver, requiere_permiso, requiere_ver, unidades_permitidas, usuario_actual,
-    verificar_unidad,
+    unidad_para_descarga, verificar_unidad,
 )
 from utils.historial import registrar
 from utils.comunes import (
@@ -140,6 +140,7 @@ def codigos(usuario: Usuario = Depends(usuario_actual), db: Session = Depends(ge
 def exportar(empresa_id: int | None = None, unidad_id: int | None = None, temporada_id: int | None = None,
              protocolo_id: str | None = None, usuario: Usuario = Depends(requiere_ver("DOCUMENTOS")),
              db: Session = Depends(get_db)) -> StreamingResponse:
+    unidad_id = unidad_para_descarga(usuario, unidad_id)
     docs = db.scalars(_consulta_documentos(db, usuario, empresa_id, unidad_id, None, None)).all()
     libro = Workbook()
     hoja = libro.active
@@ -215,6 +216,8 @@ def _nueva_version(db: Session, doc: Documento, datos: VersionEntrada, usuario: 
             Unidad.id.in_(c.unidad_ids), Unidad.empresa_id == doc.empresa_id)))
         if len(unidades) != len(set(c.unidad_ids)):
             raise HTTPException(400, "Las sucursales cubiertas deben ser de la empresa del certificado")
+        for u in unidades:
+            verificar_unidad(usuario, u.id)
         # Una sucursal (PrimusGFS: el packing) o, si son varias o ninguna, toda la empresa (multisitio)
         db.add(Certificacion(
             protocolo_id=obtener(db, Protocolo, c.protocolo_id).id, empresa_id=doc.empresa_id,
@@ -288,7 +291,7 @@ def _parecido(db: Session, a, empresa: Empresa | None, protocolo: Protocolo | No
 
 
 @router.post("/documentos/analizar")
-def analizar_subido(datos: ArchivoSubidoEntrada, _: Usuario = Depends(requiere_permiso(DOCUMENTOS)),
+def analizar_subido(datos: ArchivoSubidoEntrada, usuario: Usuario = Depends(requiere_permiso(DOCUMENTOS)),
                     db: Session = Depends(get_db)) -> dict:
     """Interpreta el archivo ya subido: qué documento parece ser, a cuál ya cargado se parece y con qué datos
     se puede rellenar el formulario. No guarda nada: la aplicación le pregunta a certificaciones antes."""
@@ -312,7 +315,8 @@ def analizar_subido(datos: ArchivoSubidoEntrada, _: Usuario = Depends(requiere_p
             candidatas = [u for u in sucursales if es_del_sitio(u, sitio)
                           and (empresa is None or u.empresa_id == empresa.id)]
             elegida = next((u for u in candidatas if protocolo.aplica_a(u)), candidatas[0] if candidatas else None)
-            if elegida:
+            # Solo se proponen sucursales habilitadas al usuario
+            if elegida and elegida.id in unidades_permitidas(usuario):
                 unidad_ids.append(elegida.id)
         categoria = next((c for c in categorias.values() if c.requiere_vencimiento), None)
         titulo = f"Certificado {protocolo.nombre}" + (f" {empresa.codigo}" if empresa else "")

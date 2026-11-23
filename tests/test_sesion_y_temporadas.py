@@ -388,3 +388,27 @@ def test_importar_auditoria_y_normas_son_permisos_distintos(cliente, sesion):
     assert cliente.post("/api/importaciones/checklist", headers=imp, files=archivo).status_code == 403
     assert cliente.post("/api/importaciones/brcgs", headers=nor, files=archivo).status_code == 403
     assert cliente.post("/api/importaciones/brcgs", headers=imp, files=archivo).status_code == 400
+
+
+def test_descargas_piden_sucursal_y_externas_solo_las_suyas(sesion):
+    from fastapi import HTTPException
+
+    from routers.auditorias_externas import _visible
+    from utils.auth import unidad_para_descarga
+    from utils.modelos import AuditoriaExterna
+
+    admin, jefe = sesion.get(Usuario, "u-admin"), sesion.get(Usuario, "u-jefe")
+    # Con varias sucursales hay que elegir una; con una sola se usa esa
+    with pytest.raises(HTTPException) as e:
+        unidad_para_descarga(admin, None)
+    assert e.value.status_code == 400
+    assert unidad_para_descarga(admin, 105) == 105
+    assert unidad_para_descarga(jefe, None) == 201
+    with pytest.raises(HTTPException) as e:
+        unidad_para_descarga(jefe, 105)
+    assert e.value.status_code == 403
+    # Informes externos: solo los de sus sucursales (o de su empresa si no se detectó sucursal)
+    assert _visible(jefe, AuditoriaExterna(empresa_id=2, sucursales_auditadas=[201]))
+    assert not _visible(jefe, AuditoriaExterna(empresa_id=1, sucursales_auditadas=[105]))
+    assert not _visible(jefe, AuditoriaExterna(empresa_id=1, sucursales_auditadas=[]))
+    assert _visible(jefe, AuditoriaExterna(empresa_id=2, sucursales_auditadas=[]))

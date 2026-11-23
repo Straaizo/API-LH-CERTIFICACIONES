@@ -187,9 +187,14 @@ NOMBRES_PERMISO = {
     "Medio ambiente - Reciclaje - Registrar": "AMBIENTE_RECICLAJE",
     "Normas - Checklist - Cargar": "IMPORTAR_PLANILLAS",
     "Importar planillas - BRCGS y normas": "IMPORTAR_PLANILLAS",  # nombre anterior
-    "Administración - Todos los módulos - Editar": PERMISO_ADMIN,
-    "Administración - Todos los módulos - Ver": PERMISO_VER,
-    "Historial - Cambios - Ver": PERMISO_HISTORIAL,
+    # Permisos amplios (23-11-2026): marcados como delicados para que en el portal no se asignen por error.
+    # No dan sucursales: cada usuario ve solo las habilitadas en el portal web.
+    "Acción delicada - Administrar todo (Editar)": PERMISO_ADMIN,
+    "Acción delicada - Ver todo (auditores)": PERMISO_VER,
+    "Acción delicada - Historial de cambios": PERMISO_HISTORIAL,
+    "Administración - Todos los módulos - Editar": PERMISO_ADMIN,  # nombre anterior
+    "Administración - Todos los módulos - Ver": PERMISO_VER,  # nombre anterior
+    "Historial - Cambios - Ver": PERMISO_HISTORIAL,  # nombre anterior
     # Nombres anteriores, aceptados mientras se renombran en el portal
     # Nombres que usa hoy el portal (12-11-2026): uno por fila, "Módulo - Ver …" / "Módulo - Editar …"
     "Registros - Ver registros de la sucursal": "REGISTROS_VER",

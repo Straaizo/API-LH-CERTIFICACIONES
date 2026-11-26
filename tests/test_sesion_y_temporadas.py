@@ -428,3 +428,52 @@ def test_importacion_brcgs_acepta_fecha_y_auditor_a_mano():
     for malo in ('{"PERSONAL": {"fecha": "20-11-2026"}}', '[1, 2]', 'no es json'):
         with pytest.raises(ValueError):
             leer_ajustes(malo)
+
+
+def test_reabrir_auditoria_cerrada(sesion):
+    from datetime import datetime
+
+    from fastapi import HTTPException
+
+    from routers.auditorias import reabrir
+    from utils.modelos import Auditoria, Protocolo, VersionNorma
+
+    protocolo = Protocolo(codigo="BRCGS", nombre="BRCGS", ambito="planta")
+    sesion.add(protocolo)
+    sesion.flush()
+    version = VersionNorma(protocolo_id=protocolo.id, nombre="v9", vigente=True)
+    sesion.add(version)
+    sesion.flush()
+    auditoria = Auditoria(version_id=version.id, unidad_id=105, fecha=date(2026, 11, 26), secciones=["7"],
+                          estado="cerrada", origen="importada", emitida_en=datetime(2026, 11, 26))
+    sesion.add(auditoria)
+    sesion.commit()
+    admin, jefe = sesion.get(Usuario, "u-admin"), sesion.get(Usuario, "u-jefe")
+    with pytest.raises(HTTPException) as e:  # 105 no es sucursal del jefe
+        reabrir(auditoria.id, jefe, sesion)
+    assert e.value.status_code == 403
+    datos = reabrir(auditoria.id, admin, sesion)
+    assert datos["estado"] == "en_curso" and auditoria.emitida_en is None
+    with pytest.raises(HTTPException) as e:  # ya abierta
+        reabrir(auditoria.id, admin, sesion)
+    assert e.value.status_code == 400
+
+
+def test_importada_con_puntos_sin_responder_queda_en_curso(sesion):
+    from utils.importadores import HojaImportada, ItemImportado
+    from utils.modelos import Auditoria, Protocolo
+    from utils.servicio_importacion import _guardar_brcgs
+
+    sesion.add(Protocolo(codigo="BRCGS", nombre="BRCGS", ambito="planta"))
+    sesion.commit()
+
+    def hoja(nombre: str, resultados: list) -> HojaImportada:
+        items = [ItemImportado(codigo=f"7.1.{n}", seccion="7", seccion_titulo="Personal", texto="Requisito",
+                               fundamental=False, resultado=r, comentario="", fila=n, advertencias=[])
+                 for n, r in enumerate(resultados, 1)]
+        return HojaImportada(hoja=nombre, lugar="", auditor="", fecha=date(2026, 11, 26), alcance="", items=items)
+
+    incompleta = sesion.get(Auditoria, _guardar_brcgs(sesion, hoja("A", ["si", None]), sesion.get(Unidad, 105), "a", None))
+    completa = sesion.get(Auditoria, _guardar_brcgs(sesion, hoja("B", ["si", "na"]), sesion.get(Unidad, 105), "b", None))
+    assert (incompleta.estado, incompleta.emitida_en) == ("en_curso", None)
+    assert completa.estado == "cerrada" and completa.emitida_en is not None

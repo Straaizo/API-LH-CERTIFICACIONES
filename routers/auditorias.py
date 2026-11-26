@@ -266,6 +266,22 @@ def emitir(auditoria_id: str, usuario: Usuario = Depends(requiere_permiso(AUDITO
                                                    "plazo_dias": PLAZO_NC_DIAS}
 
 
+@router.post("/auditorias/{auditoria_id}/reabrir")
+def reabrir(auditoria_id: str, usuario: Usuario = Depends(requiere_permiso(AUDITORIAS)), db: Session = Depends(get_db)) -> dict:
+    """Vuelve a abrir una auditoría cerrada (emitida o importada) para completar o corregir respuestas.
+    Las no conformidades ya creadas se mantienen con su plazo y responsable; al emitir de nuevo se cierra otra vez."""
+    auditoria = obtener(db, Auditoria, auditoria_id)
+    verificar_unidad(usuario, auditoria.unidad_id)
+    if auditoria.estado != "cerrada" and not auditoria.emitida_en:
+        raise HTTPException(400, "La auditoría no está cerrada")
+    registrar(db, usuario, "reabrir", "auditoria", auditoria.id,
+              {"emitida_en": auditoria.emitida_en.isoformat() if auditoria.emitida_en else None})
+    auditoria.estado, auditoria.emitida_en, auditoria.emitida_por_id = "en_curso", None, None
+    db.commit()
+    db.refresh(auditoria)
+    return _auditoria_dict(auditoria)
+
+
 @router.get("/auditorias/{auditoria_id}/exportar")
 def exportar(auditoria_id: str, clausulas: str | None = None, usuario: Usuario = Depends(requiere_ver("AUDITORIAS")),
              db: Session = Depends(get_db)) -> Response:

@@ -131,13 +131,14 @@ def _guardar_brcgs(db: Session, hoja: HojaImportada, unidad: Unidad, origen: str
     advertencias_items = [f"{i.codigo}: {a}" for i in hoja.items for a in i.advertencias]
     meses = ["enero", "febrero", "marzo", "abril", "mayo", "junio", "julio", "agosto", "septiembre", "octubre",
              "noviembre", "diciembre"]
-    # Las auditorías de planillas anteriores se consideran con informe ya emitido
+    # Completa: se considera con informe ya emitido. Con puntos sin responder queda en curso para completarla.
+    completa = all(i.resultado is not None for i in _deduplicar(hoja.items))
     auditoria = Auditoria(
         version_id=version.id, unidad_id=unidad.id, fecha=hoja.fecha, fecha_fin=hoja.fecha, temporada=temporada,
         titulo=f"Auditoría interna BRCGS cláusula {', '.join(hoja.secciones)} · {meses[hoja.fecha.month - 1]} {hoja.fecha.year}",
-        auditor=hoja.auditor.title(), secciones=hoja.secciones, estado="cerrada", origen="importada",
-        archivo_origen=origen, advertencias=hoja.advertencias + advertencias_items,
-        emitida_en=datetime.combine(hoja.fecha, datetime.min.time()),
+        auditor=hoja.auditor.title(), secciones=hoja.secciones, estado="cerrada" if completa else "en_curso",
+        origen="importada", archivo_origen=origen, advertencias=hoja.advertencias + advertencias_items,
+        emitida_en=datetime.combine(hoja.fecha, datetime.min.time()) if completa else None,
     )
     db.add(auditoria)
     db.flush()

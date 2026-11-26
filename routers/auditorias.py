@@ -20,7 +20,8 @@ from utils.modelos import (
     Area, Auditoria, NoConformidad, Requisito, Respuesta, Unidad, Usuario, VersionNorma, usuario_sucursales,
 )
 from utils.no_conformidades import sincronizar_nc
-from utils.servicio_importacion import importar_brcgs, importar_checklist
+from utils.servicio_importacion import importar_brcgs, importar_checklist, leer_ajustes
+from utils.temporadas import buscar_temporada
 from utils.texto import nombre_archivo_seguro
 from utils.hora import ahora
 
@@ -397,14 +398,23 @@ async def _leer_planilla(archivo: UploadFile) -> bytes:
 
 @router.post("/importaciones/brcgs")
 async def importar_auditoria_brcgs(archivo: UploadFile = File(...), confirmar: bool = Form(False),
-                                   unidad_id: int | None = Form(None), usuario: Usuario = Depends(requiere_permiso(AUDITORIAS_IMPORTAR)),
+                                   unidad_id: int | None = Form(None), temporada_id: int | None = Form(None),
+                                   ajustes: str | None = Form(None),
+                                   usuario: Usuario = Depends(requiere_permiso(AUDITORIAS_IMPORTAR)),
                                    db: Session = Depends(get_db), temporada: TemporadaLogica = Depends(temporada_seleccionada)) -> dict:
-    """Sin confirmar: vista previa con lo detectado y los errores de la planilla. Confirmado: guarda."""
+    """Sin confirmar: vista previa con lo detectado y los errores de la planilla. Confirmado: guarda.
+    temporada_id: temporada elegida en la ventana de importación (reemplaza la de arriba solo aquí).
+    ajustes: JSON {"<hoja>": {"fecha": "AAAA-MM-DD", "auditor": "..."}} con los datos completados a mano."""
     if unidad_id is not None:
         verificar_unidad(usuario, unidad_id)
+    if temporada_id is not None:
+        temporada = buscar_temporada(db, temporada_id)
+        if temporada is None:
+            raise HTTPException(400, "Temporada no válida")
     contenido = await _leer_planilla(archivo)
     try:
-        return importar_brcgs(db, contenido, archivo.filename, usuario, confirmar, unidad_id, temporada)
+        return importar_brcgs(db, contenido, archivo.filename, usuario, confirmar, unidad_id, temporada,
+                              leer_ajustes(ajustes))
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
 

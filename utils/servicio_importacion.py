@@ -1,5 +1,6 @@
 """Importación de planillas a la base. Sin confirmar, solo devuelve la vista previa."""
-from datetime import datetime
+import json
+from datetime import date, datetime
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -46,11 +47,44 @@ def _deduplicar(items: list[ItemImportado]) -> list[ItemImportado]:
     return list(elegidos.values())
 
 
+def leer_ajustes(texto: str | None) -> dict[str, dict]:
+    """Datos de cada hoja completados a mano en la vista previa: {"<hoja>": {"fecha": "AAAA-MM-DD", "auditor": "..."}}."""
+    if not texto:
+        return {}
+    try:
+        datos = json.loads(texto)
+        if not isinstance(datos, dict):
+            raise ValueError
+        ajustes: dict[str, dict] = {}
+        for hoja, valores in datos.items():
+            if not isinstance(valores, dict):
+                raise ValueError
+            ajuste: dict = {}
+            if valores.get("fecha"):
+                ajuste["fecha"] = date.fromisoformat(str(valores["fecha"]))
+            if valores.get("auditor"):
+                ajuste["auditor"] = str(valores["auditor"]).strip()[:100]
+            ajustes[str(hoja)] = ajuste
+        return ajustes
+    except (ValueError, TypeError) as exc:
+        raise ValueError("Los datos completados a mano no son válidos") from exc
+
+
+def _aplicar_ajuste(hoja: HojaImportada, ajuste: dict) -> None:
+    if "fecha" in ajuste:
+        hoja.fecha = ajuste["fecha"]
+        hoja.advertencias = [a for a in hoja.advertencias if a != "No se encontró la fecha de la auditoría"]
+    if "auditor" in ajuste:
+        hoja.auditor = ajuste["auditor"]
+
+
 def importar_brcgs(db: Session, contenido: bytes, nombre_archivo: str, usuario: Usuario | None,
-                   confirmar: bool, unidad_id: int | None = None, elegida: TemporadaLogica | None = None) -> dict:
+                   confirmar: bool, unidad_id: int | None = None, elegida: TemporadaLogica | None = None,
+                   ajustes: dict[str, dict] | None = None) -> dict:
     hojas = leer_brcgs(contenido)
     salida = []
     for hoja in hojas:
+        _aplicar_ajuste(hoja, (ajustes or {}).get(hoja.hoja, {}))
         unidad = db.get(Unidad, unidad_id) if unidad_id else _detectar_unidad(db, hoja.lugar)
         temporada = temporada_para_fecha(db, hoja.fecha, unidad.empresa_id if unidad else None) if hoja.fecha else None
         origen = f"{nombre_archivo} / {hoja.hoja}"
@@ -71,11 +105,13 @@ def importar_brcgs(db: Session, contenido: bytes, nombre_archivo: str, usuario: 
         errores = []
         if not unidad:
             errores.append(f"No se reconoce la sucursal '{hoja.lugar}'; indícala manualmente")
-        if not temporada:
+        if not hoja.fecha:
+            errores.append("Falta la fecha de la auditoría: ingrésala en esta hoja")
+        elif not temporada:
             errores.append("La fecha no cae en ninguna temporada registrada")
         elif elegida and temporada.id != elegida.id:
-            errores.append(f"La hoja es de la temporada {temporada.nombre}: cambia la temporada arriba a "
-                           f"{temporada.nombre} y vuelve a importarla")
+            errores.append(f"La hoja es de la temporada {temporada.nombre}: elige la temporada {temporada.nombre} "
+                           f"en esta ventana o corrige la fecha")
         if duplicada:
             # No se reemplaza: borraría sus respuestas y las no conformidades que ya se están trabajando
             errores.append("Esta hoja ya fue importada: para cambiarla, edita la auditoría existente")

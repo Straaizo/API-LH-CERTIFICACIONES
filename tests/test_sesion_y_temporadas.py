@@ -412,3 +412,19 @@ def test_descargas_piden_sucursal_y_externas_solo_las_suyas(sesion):
     assert not _visible(jefe, AuditoriaExterna(empresa_id=1, sucursales_auditadas=[105]))
     assert not _visible(jefe, AuditoriaExterna(empresa_id=1, sucursales_auditadas=[]))
     assert _visible(jefe, AuditoriaExterna(empresa_id=2, sucursales_auditadas=[]))
+
+
+def test_importacion_brcgs_acepta_fecha_y_auditor_a_mano():
+    from utils.importadores import HojaImportada
+    from utils.servicio_importacion import _aplicar_ajuste, leer_ajustes
+
+    ajustes = leer_ajustes('{"PERSONAL": {"fecha": "2026-11-20", "auditor": " Ana Pérez "}}')
+    hoja = HojaImportada(hoja="PERSONAL", lugar="", auditor="", fecha=None, alcance="",
+                         advertencias=["No se encontró la fecha de la auditoría", "No se encontró el lugar"])
+    _aplicar_ajuste(hoja, ajustes["PERSONAL"])
+    assert hoja.fecha == date(2026, 11, 20) and hoja.auditor == "Ana Pérez"
+    assert hoja.advertencias == ["No se encontró el lugar"]
+    assert leer_ajustes(None) == {}
+    for malo in ('{"PERSONAL": {"fecha": "20-11-2026"}}', '[1, 2]', 'no es json'):
+        with pytest.raises(ValueError):
+            leer_ajustes(malo)
